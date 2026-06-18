@@ -56,13 +56,15 @@ type Account struct {
 
 	// External IdP authentication fields (for "Your organization" Kiro SSO flow)
 	IssuerURL   string `json:"issuerUrl,omitempty"`   // IdP OIDC issuer (e.g. https://login.microsoftonline.com/<tenant>/v2.0)
-	IdPClientID string `json:"idpClientId,omitempty"`  // Client ID registered with the external IdP (from Kiro portal)
-	Scopes      string `json:"scopes,omitempty"`       // Space-separated scopes for the IdP token endpoint
-	LoginHint   string `json:"loginHint,omitempty"`    // User email used as login_hint during IdP authorization
+	IdPClientID string `json:"idpClientId,omitempty"` // Client ID registered with the external IdP (from Kiro portal)
+	Scopes      string `json:"scopes,omitempty"`      // Space-separated scopes for the IdP token endpoint
+	LoginHint   string `json:"loginHint,omitempty"`   // User email used as login_hint during IdP authorization
 
-	ExpiresAt    int64  `json:"expiresAt,omitempty"`    // Token expiration timestamp (Unix seconds)
-	MachineId    string `json:"machineId,omitempty"`    // UUID machine identifier for request tracking
-	ProfileArn   string `json:"profileArn,omitempty"`   // CodeWhisperer/Kiro profile ARN for generation requests
+	IdPTokenEndpoint string `json:"idpTokenEndpoint,omitempty"` // Cached IdP token endpoint (resolved via OIDC discovery during login)
+
+	ExpiresAt  int64  `json:"expiresAt,omitempty"`  // Token expiration timestamp (Unix seconds)
+	MachineId  string `json:"machineId,omitempty"`  // UUID machine identifier for request tracking
+	ProfileArn string `json:"profileArn,omitempty"` // CodeWhisperer/Kiro profile ARN for generation requests
 
 	// Per-account outbound proxy (falls back to global ProxyURL if empty)
 	ProxyURL string `json:"proxyURL,omitempty"`

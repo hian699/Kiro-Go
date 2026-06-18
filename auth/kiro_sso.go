@@ -63,15 +63,16 @@ type KiroSsoSession struct {
 
 // KiroSsoResult chứa kết quả của flow Kiro SSO.
 type KiroSsoResult struct {
-	AccessToken  string
-	RefreshToken string
-	ExpiresIn    int
-	IssuerURL    string
-	IdPClientID  string
-	Scopes       string
-	LoginHint    string
-	UserEmail    string
-	Err          error
+	AccessToken      string
+	RefreshToken     string
+	ExpiresIn        int
+	IssuerURL        string
+	IdPClientID      string
+	Scopes           string
+	LoginHint        string
+	UserEmail        string
+	IdPTokenEndpoint string // cached token endpoint from OIDC discovery
+	Err              error
 }
 
 var (
@@ -302,7 +303,7 @@ func GetKiroSsoSession(sessionID string) *KiroSsoSession {
 
 // RefreshExternalIdpToken làm mới access token qua IdP token endpoint.
 // Được gọi từ oidc.go khi AuthMethod == "external_idp".
-func RefreshExternalIdpToken(refreshToken, issuerURL, clientID, scopes string, httpClient *http.Client) (string, string, int64, string, error) {
+func RefreshExternalIdpToken(refreshToken, issuerURL, tokenEndpoint, clientID, scopes string, httpClient *http.Client) (string, string, int64, string, error) {
 	if issuerURL == "" {
 		return "", "", 0, "", fmt.Errorf("external_idp refresh requires issuerUrl")
 	}
@@ -310,10 +311,13 @@ func RefreshExternalIdpToken(refreshToken, issuerURL, clientID, scopes string, h
 		return "", "", 0, "", fmt.Errorf("external_idp refresh requires idpClientId")
 	}
 
-	// OIDC discovery để lấy token endpoint
-	tokenEndpoint, err := resolveExternalIdpTokenEndpoint(issuerURL)
-	if err != nil {
-		return "", "", 0, "", err
+	// Dùng cached token endpoint nếu có, nếu không thì OIDC discovery
+	if tokenEndpoint == "" {
+		var err error
+		tokenEndpoint, err = resolveExternalIdpTokenEndpoint(issuerURL)
+		if err != nil {
+			return "", "", 0, "", err
+		}
 	}
 
 	// POST refresh_token grant (form-encoded, giống zsec postExternalIdpToken)
@@ -582,6 +586,7 @@ func (s *KiroSsoSession) handleOAuthCallback(w http.ResponseWriter, r *http.Requ
 		Scopes:       s.IdPScopes,
 		LoginHint:    s.LoginHint,
 		UserEmail:    email,
+				IdPTokenEndpoint: s.IdPTokenEndpoint,
 	}:
 	default:
 	}

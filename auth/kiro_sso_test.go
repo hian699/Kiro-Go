@@ -190,7 +190,7 @@ func TestRefreshExternalIdpToken_Success(t *testing.T) {
 	})
 
 	accessToken, refreshToken, expiresAt, _, err := RefreshExternalIdpToken(
-		"old-refresh", "https://login.microsoftonline.com/test/v2.0", "test-client", "openid offline_access", nil,
+		"old-refresh", "https://login.microsoftonline.com/test/v2.0", "", "test-client", "openid offline_access", nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -218,7 +218,7 @@ func TestRefreshExternalIdpToken_ErrorResponse(t *testing.T) {
 	})
 
 	_, _, _, _, err := RefreshExternalIdpToken(
-		"bad-refresh", "https://login.microsoftonline.com/test/v2.0", "test-client", "", nil,
+		"bad-refresh", "https://login.microsoftonline.com/test/v2.0", "", "test-client", "", nil,
 	)
 	if err == nil {
 		t.Fatal("expected error for 400 response")
@@ -229,14 +229,14 @@ func TestRefreshExternalIdpToken_ErrorResponse(t *testing.T) {
 }
 
 func TestRefreshExternalIdpToken_MissingIssuerURL(t *testing.T) {
-	_, _, _, _, err := RefreshExternalIdpToken("token", "", "client", "", nil)
+	_, _, _, _, err := RefreshExternalIdpToken("token", "", "", "client", "", nil)
 	if err == nil {
 		t.Fatal("expected error for missing issuer URL")
 	}
 }
 
 func TestRefreshExternalIdpToken_MissingClientID(t *testing.T) {
-	_, _, _, _, err := RefreshExternalIdpToken("token", "https://login.microsoftonline.com/test", "", "", nil)
+	_, _, _, _, err := RefreshExternalIdpToken("token", "https://login.microsoftonline.com/test", "", "", "", nil)
 	if err == nil {
 		t.Fatal("expected error for missing client ID")
 	}

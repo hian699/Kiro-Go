@@ -2787,20 +2787,21 @@ func (h *Handler) apiPollKiroSso(w http.ResponseWriter, r *http.Request) {
 	}
 
 	account := config.Account{
-		ID:           auth.GenerateAccountID(),
-		Email:        email,
-		AccessToken:  result.AccessToken,
-		RefreshToken: result.RefreshToken,
-		AuthMethod:   "external_idp",
-		Provider:     "MicrosoftEntra",
-		IssuerURL:    result.IssuerURL,
-		IdPClientID:  result.IdPClientID,
-		Scopes:       result.Scopes,
-		LoginHint:    result.LoginHint,
-		Region:       "us-east-1",
-		ExpiresAt:    time.Now().Unix() + int64(result.ExpiresIn),
-		Enabled:      true,
-		MachineId:    config.GenerateMachineId(),
+		ID:               auth.GenerateAccountID(),
+		Email:            email,
+		AccessToken:      result.AccessToken,
+		RefreshToken:     result.RefreshToken,
+		AuthMethod:       "external_idp",
+		Provider:         "MicrosoftEntra",
+		IssuerURL:        result.IssuerURL,
+		IdPClientID:      result.IdPClientID,
+		Scopes:           result.Scopes,
+		LoginHint:        result.LoginHint,
+		IdPTokenEndpoint: result.IdPTokenEndpoint,
+		Region:           "us-east-1",
+		ExpiresAt:        time.Now().Unix() + int64(result.ExpiresIn),
+		Enabled:          true,
+		MachineId:        config.GenerateMachineId(),
 	}
 
 	if err := config.AddAccount(account); err != nil {
@@ -3072,6 +3073,10 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 
 	// 获取用户信息
 	email, _, _ := auth.GetUserInfo(accessToken)
+	// external_idp: GetUserInfo may fail for Microsoft-issued tokens; fallback to loginHint
+	if email == "" && req.LoginHint != "" {
+		email = req.LoginHint
+	}
 
 	// 创建账号
 	account := config.Account{
@@ -3103,6 +3108,15 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// external_idp: resolve profileArn after import (ListAvailableProfiles with TokenType header)
+	if req.AuthMethod == "external_idp" {
+		go func(acc config.Account) {
+			if _, err := ResolveProfileArn(&acc); err != nil {
+				logger.Warnf("[ImportCredentials] Profile ARN resolve failed for external_idp account %s: %v", acc.Email, err)
+			}
+		}(account)
+	}
+
 	h.pool.Reload()
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
@@ -3128,11 +3142,11 @@ func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"apiKey":         config.GetApiKey(),
-		"requireApiKey":  config.IsApiKeyRequired(),
-		"port":           config.GetPort(),
-		"host":           config.GetHost(),
-		"allowOverUsage": config.GetAllowOverUsage(),
+		"apiKey":          config.GetApiKey(),
+		"requireApiKey":   config.IsApiKeyRequired(),
+		"port":            config.GetPort(),
+		"host":            config.GetHost(),
+		"allowOverUsage":  config.GetAllowOverUsage(),
 		"maxPayloadBytes": config.GetMaxPayloadBytes(),
 	})
 }
@@ -3828,10 +3842,10 @@ func (h *Handler) apiExportAccounts(w http.ResponseWriter, r *http.Request) {
 				ExpiresAt:    a.ExpiresAt * 1000, // 转为毫秒时间戳
 				AuthMethod:   authMethod,
 				Provider:     a.Provider,
-					IssuerURL:    a.IssuerURL,
-					IdPClientID:  a.IdPClientID,
-					Scopes:       a.Scopes,
-					LoginHint:    a.LoginHint,
+				IssuerURL:    a.IssuerURL,
+				IdPClientID:  a.IdPClientID,
+				Scopes:       a.Scopes,
+				LoginHint:    a.LoginHint,
 			},
 			Subscription: ExportSubscription{
 				Type:  subType,
