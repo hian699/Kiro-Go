@@ -43,3 +43,13 @@ func SetExternalIdpTokenURLFnForTest(fn func(issuerURL string) (string, error)) 
 		externalIdpTokenURLFn = fn
 	}
 }
+
+// SetKiroLoopbackPortsForTest overrides the loopback port list used by
+// bindKiroLoopback. Pass []int{0} to force an ephemeral random port and avoid
+// port conflicts during parallel test runs. Returns the previous override so
+// callers can restore it. Test-only.
+func SetKiroLoopbackPortsForTest(ports []int) []int {
+	old := kiroLoopbackPortsOverride
+	kiroLoopbackPortsOverride = ports
+	return old
+}

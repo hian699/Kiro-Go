@@ -28,6 +28,9 @@ func GetUsageLimits(account *config.Account) (*UsageLimitsResponse, error) {
 	}
 
 	setKiroHeaders(req, account)
+	if account.AuthMethod == "external_idp" {
+		req.Header.Set("TokenType", "EXTERNAL_IDP")
+	}
 
 	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
 	if err != nil {

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"kiro-go/logger"
 )
 
 // KiroSsoSession đại diện cho một phiên đăng nhập Kiro Hosted SSO đang diễn ra.
@@ -89,6 +91,69 @@ var kiroRedirectFrom = "KiroIDE"
 // Mặc định: OIDC discovery. Test có thể thay thế qua SetExternalIdpTokenURLFnForTest.
 var externalIdpTokenURLFn func(issuerURL string) (string, error)
 
+// kiroLoopbackPorts là tập port loopback chính thức mà Kiro portal chấp nhận cho
+// Leg-1 redirect (verified: Kiro Okta IdP docs). bindKiroLoopback thử lần lượt theo
+// đúng thứ tự này và dùng port trống đầu tiên.
+var kiroLoopbackPorts = []int{3128, 4649, 6588, 8008, 9091, 49153, 50153, 51153, 52153, 53153}
+
+// kiroLoopbackPortsOverride là test-only hook. Khi không rỗng, bindKiroLoopback dùng
+// danh sách này thay cho kiroLoopbackPorts. Đặt {0} để ép dùng port ephemeral ngẫu nhiên,
+// tránh xung đột port khi chạy test song song. Xem SetKiroLoopbackPortsForTest.
+var kiroLoopbackPortsOverride []int
+
+// bindKiroLoopback thử bind 127.0.0.1 lần lượt trên từng port trong kiroLoopbackPorts
+// (hoặc kiroLoopbackPortsOverride khi đang test), trả về listener và port đầu tiên bind
+// thành công. Nếu tất cả port đều bận, trả về lỗi rõ ràng.
+func bindKiroLoopback() (net.Listener, int, error) {
+	ports := kiroLoopbackPorts
+	if len(kiroLoopbackPortsOverride) > 0 {
+		ports = kiroLoopbackPortsOverride
+	}
+
+	for _, p := range ports {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err == nil {
+			return ln, ln.Addr().(*net.TCPAddr).Port, nil
+		}
+	}
+
+	return nil, 0, fmt.Errorf("tất cả port loopback Kiro (%v) đều đang bận", ports)
+}
+
+// serveLoopback chạy loopback HTTP server trên cả IPv4 và (best-effort) IPv6.
+//
+// redirect_uri của cả hai leg dùng host `localhost` (khớp đăng ký Microsoft Entra
+// `http://localhost/oauth/callback`). Vì browser có thể resolve `localhost` thành
+// 127.0.0.1 hoặc ::1, ta phục vụ trên cả hai để callback luôn tới được server.
+//
+//   - 127.0.0.1 (IPv4): bắt buộc — listener đã được bindKiroLoopback bind sẵn, truyền vào
+//     qua tham số v4Listener. Nếu server này dừng bất thường (không phải ErrServerClosed)
+//     thì đẩy lỗi vào ResultCh.
+//   - [::1] (IPv6): best-effort — thử bind trên CÙNG port; nếu fail thì log debug và bỏ qua
+//     (không làm hỏng flow). Nếu bind thành công thì phục vụ cùng handler.
+//
+// Hàm này block trên việc serve IPv4 listener (gọi trong goroutine ở StartKiroSsoLogin).
+func serveLoopback(s *KiroSsoSession, v4Listener net.Listener, port int) {
+	// IPv6 loopback best-effort trên cùng port.
+	if v6Listener, err := net.Listen("tcp", fmt.Sprintf("[::1]:%d", port)); err != nil {
+		logger.Debugf("[KiroSSO] bind IPv6 loopback [::1]:%d thất bại (best-effort, bỏ qua): %v", port, err)
+	} else {
+		go func() {
+			if err := s.LoopbackServer.Serve(v6Listener); err != nil && err != http.ErrServerClosed {
+				logger.Debugf("[KiroSSO] IPv6 loopback server dừng: %v", err)
+			}
+		}()
+	}
+
+	// IPv4 loopback (bắt buộc) — block cho tới khi server dừng.
+	if err := s.LoopbackServer.Serve(v4Listener); err != nil && err != http.ErrServerClosed {
+		select {
+		case s.ResultCh <- KiroSsoResult{Err: fmt.Errorf("loopback server stopped: %w", err)}:
+		default:
+		}
+	}
+}
+
 // Microsoft Entra allow-list — chỉ các host này được phép làm external IdP endpoint.
 // Leading dot ensures subdomain boundary: "evil-microsoftonline.com" cannot match.
 var allowedExternalIdpHosts = []string{
@@ -111,12 +176,11 @@ func StartKiroSsoLogin(loginHint string) (sessionID, authorizeURL string, loopba
 	codeChallenge := generateCodeChallenge(codeVerifier)
 	state := uuid.New().String()
 
-	// 2. Bind loopback server trên port ngẫu nhiên
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	// 2. Bind loopback server trên tập port chính thức của Kiro
+	listener, loopbackPort, err := bindKiroLoopback()
 	if err != nil {
 		return "", "", 0, fmt.Errorf("không thể bind loopback server: %w", err)
 	}
-	loopbackPort = listener.Addr().(*net.TCPAddr).Port
 
 	// 3. Leg-1 redirect_uri = root path (giống zsec SocialRedirectURI)
 	redirectURI := fmt.Sprintf("http://localhost:%d", loopbackPort)
@@ -160,12 +224,7 @@ func StartKiroSsoLogin(loginHint string) (sessionID, authorizeURL string, loopba
 
 	go func() {
 		close(session.LoopbackReady)
-		if err := session.LoopbackServer.Serve(listener); err != nil && err != http.ErrServerClosed {
-			select {
-			case session.ResultCh <- KiroSsoResult{Err: fmt.Errorf("loopback server stopped: %w", err)}:
-			default:
-			}
-		}
+		serveLoopback(session, listener, loopbackPort)
 	}()
 
 	// 7. Background cleanup goroutine
