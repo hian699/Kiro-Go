@@ -3056,6 +3056,20 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Backend-side external_idp detection: an older cached frontend (or a JSON
+	// export missing the authMethod field) can mislabel a Microsoft Entra
+	// account as "social", which then refreshes against the wrong endpoint and
+	// fails with 401 "Bad credentials". Trust the IdP signals over the label:
+	// presence of issuerUrl / idpClientId / a Microsoft-style provider means
+	// this is an External IdP account regardless of what authMethod claims.
+	if req.AuthMethod != "external_idp" {
+		if req.IssuerURL != "" || req.IdPClientID != "" ||
+			strings.Contains(strings.ToLower(req.Provider), "entra") ||
+			strings.Contains(strings.ToLower(req.Provider), "microsoft") {
+			req.AuthMethod = "external_idp"
+		}
+	}
+
 	// 用 refreshToken 刷新获取新的 accessToken。导入必须以一次成功的刷新为前提：
 	// 本地缓存里的 accessToken 不携带可信的过期时间，盲猜短 TTL 会让账号在选号时
 	// 永远被跳过，导致后台/按需刷新都无法触发（详见 ensureValidToken 与 Pick 的过期判定）。
@@ -3496,6 +3510,10 @@ func (h *Handler) apiGetAccountFull(w http.ResponseWriter, r *http.Request, id s
 		"clientSecret":      account.ClientSecret,
 		"authMethod":        account.AuthMethod,
 		"provider":          account.Provider,
+		"issuerUrl":         account.IssuerURL,
+		"idpClientId":       account.IdPClientID,
+		"scopes":            account.Scopes,
+		"loginHint":         account.LoginHint,
 		"region":            account.Region,
 		"expiresAt":         account.ExpiresAt,
 		"machineId":         account.MachineId,
