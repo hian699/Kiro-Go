@@ -569,7 +569,10 @@ func (s *KiroSsoSession) handleOAuthCallback(w http.ResponseWriter, r *http.Requ
 	// Validate state (Leg-2 CSRF)
 	// zsec: state empty or mismatch → 204 (don't consume one-shot)
 	state := query.Get("state")
+	logger.Infof("[KiroSSO] Leg-2 callback hit state_present=%t state_match=%t has_code=%t",
+		state != "", state == s.IdPState, query.Get("code") != "")
 	if state == "" || state != s.IdPState {
+		logger.Warnf("[KiroSSO] Leg-2 state mismatch → 204 (got=%q want=%q)", state, s.IdPState)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
