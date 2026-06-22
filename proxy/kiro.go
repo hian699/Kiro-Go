@@ -288,6 +288,56 @@ func getSortedEndpoints(preferred string) []kiroEndpoint {
 	return result
 }
 
+// secretPreviewRe masks obvious credential tokens in the content preview so
+// debug logs never leak API keys / bearer tokens that appear inside prompts.
+var secretPreviewRe = regexp.MustCompile(`(?i)(sk-[a-z0-9_-]{6,}|bearer\s+[a-z0-9._-]{8,}|(?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*["']?[a-z0-9._-]{6,})`)
+
+func maskSecrets(s string) string {
+	return secretPreviewRe.ReplaceAllString(s, "[REDACTED]")
+}
+
+// summarizeKiroPayload returns a compact, single-line description of a request
+// payload for debug logging: the request shape (model, history depth, tool
+// counts, content size) plus a short, secret-masked preview of the current
+// message content. It deliberately avoids dumping the full payload, which can
+// be hundreds of KB and contain user secrets.
+func summarizeKiroPayload(payload *KiroPayload) string {
+	if payload == nil {
+		return "<nil>"
+	}
+	cs := &payload.ConversationState
+	uim := &cs.CurrentMessage.UserInputMessage
+
+	tools, toolResults := 0, 0
+	if uim.UserInputMessageContext != nil {
+		tools = len(uim.UserInputMessageContext.Tools)
+		toolResults = len(uim.UserInputMessageContext.ToolResults)
+	}
+
+	const previewLen = 200
+	preview := uim.Content
+	truncated := false
+	if len([]rune(preview)) > previewLen {
+		preview = string([]rune(preview)[:previewLen])
+		truncated = true
+	}
+	// Collapse whitespace/newlines so the preview stays on one log line.
+	preview = strings.Join(strings.Fields(preview), " ")
+	preview = maskSecrets(preview)
+	if truncated {
+		preview += "…"
+	}
+
+	convID := cs.ConversationID
+	if len(convID) > 8 {
+		convID = convID[:8]
+	}
+
+	return fmt.Sprintf("conv=%s model=%s task=%s trigger=%s history=%d tools=%d toolResults=%d images=%d contentChars=%d content=%q",
+		convID, uim.ModelID, cs.AgentTaskType, cs.ChatTriggerType,
+		len(cs.History), tools, toolResults, len(uim.Images), len(uim.Content), preview)
+}
+
 // CallKiroAPI calls the Kiro streaming API, trying each configured endpoint with automatic fallback.
 func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
 	originalProfileArn := ""
@@ -303,9 +353,10 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		return err
 	}
 
-	// Debug: dump full payload for troubleshooting upstream rejections
-	if payloadJSON, err := json.Marshal(payload); err == nil {
-		logger.Debugf("[KiroAPI] Request payload: %s", string(payloadJSON))
+	// Debug: log a compact summary (shape + masked content preview) instead of
+	// the full payload, which can be hundreds of KB and contain secrets.
+	if enabled := logger.GetLevel(); enabled <= logger.LevelDebug {
+		logger.Debugf("[KiroAPI] Request: %s", summarizeKiroPayload(payload))
 	}
 
 	// Wrap OnToolUse to restore original tool names for the client.
