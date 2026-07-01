@@ -259,6 +259,14 @@ type Config struct {
 	// Leave empty to connect directly.
 	ProxyURL string `json:"proxyURL,omitempty"`
 
+	// PublicBaseURL is the externally reachable base URL of this proxy
+	// (e.g. "https://azr.hian.software"). When set, OAuth redirect_uri values
+	// for the Kiro/IAM SSO flows are built from it instead of being hardcoded to
+	// http://localhost:<port>, so logins work through a reverse proxy / custom
+	// domain without hand-editing the browser URL. Empty = auto-detect from the
+	// admin request Host header, falling back to localhost.
+	PublicBaseURL string `json:"publicBaseURL,omitempty"`
+
 	// SanitizeClaudeCodePrompt is kept for backward-compatible JSON loading only.
 	// Migrated to FilterClaudeCode on first load. Do not use directly.
 	SanitizeClaudeCodePrompt bool `json:"sanitizeClaudeCodePrompt,omitempty"`
@@ -989,6 +997,26 @@ func UpdateMaxPayloadBytes(n int) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.MaxPayloadBytes = n
+	return Save()
+}
+
+// GetPublicBaseURL returns the configured externally reachable base URL
+// (no trailing slash), or "" when unset. Used to build OAuth redirect_uri
+// values that work behind a reverse proxy / custom domain.
+func GetPublicBaseURL() string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return ""
+	}
+	return strings.TrimRight(cfg.PublicBaseURL, "/")
+}
+
+// UpdatePublicBaseURL sets the public base URL and persists the change.
+func UpdatePublicBaseURL(u string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.PublicBaseURL = strings.TrimRight(strings.TrimSpace(u), "/")
 	return Save()
 }
 

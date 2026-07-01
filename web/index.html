@@ -49,6 +49,7 @@
           <div class="lang-switch" id="loginLangSwitch" role="group" aria-label="" data-i18n-aria-label="lang.label">
             <button class="lang-btn" data-lang="zh" type="button" data-i18n="lang.zh"></button>
             <button class="lang-btn" data-lang="en" type="button" data-i18n="lang.en"></button>
+            <button class="lang-btn" data-lang="vi" type="button" data-i18n="lang.vi"></button>
           </div>
           <span class="divider" aria-hidden="true"></span>
           <button id="loginThemeToggle" class="icon-btn theme-toggle" type="button" aria-label=""
@@ -107,6 +108,10 @@
                 data-i18n="tabs.settings"></span></button>
             <button type="button" class="tab" data-tab="api"><i class="fa-solid fa-plug tab-icon"></i><span
                 data-i18n="tabs.api"></span></button>
+            <button type="button" class="tab" data-tab="apilog"><i class="fa-solid fa-list-ul tab-icon"></i><span
+                data-i18n="tabs.apilog"></span></button>
+            <button type="button" class="tab" data-tab="usage"><i class="fa-solid fa-gauge-high tab-icon"></i><span
+                data-i18n="tabs.usage"></span></button>
             <button type="button" class="tab" data-tab="console"><i class="fa-solid fa-terminal tab-icon"></i><span
                 data-i18n="tabs.console"></span></button>
           </div>
@@ -115,6 +120,7 @@
           <div class="lang-switch" id="mainLangSwitch" role="group" aria-label="" data-i18n-aria-label="lang.label">
             <button class="lang-btn" data-lang="zh" type="button" data-i18n="lang.zh"></button>
             <button class="lang-btn" data-lang="en" type="button" data-i18n="lang.en"></button>
+            <button class="lang-btn" data-lang="vi" type="button" data-i18n="lang.vi"></button>
           </div>
           <button id="mainThemeToggle" class="icon-btn theme-toggle" type="button" aria-label=""
             data-i18n-title="theme.toggle" data-i18n-aria-label="theme.toggle" data-theme="system">
@@ -271,14 +277,14 @@
             <small data-i18n="settings.allowOverUsageHint"></small>
           </div>
           <div class="form-group">
-            <label>Max payload size (giới hạn byte mỗi request gửi lên AWS)</label>
+            <label data-i18n="settings.maxPayload"></label>
             <select id="maxPayloadBytes">
-              <option value="921600">900 KB · Conservative · ~236k tokens (giá trị gốc)</option>
-              <option value="2000000">2.0 MB · Balanced · ~820k tokens · khuyến nghị</option>
-              <option value="2100000">2.1 MB · Aggressive · ~860k tokens · sát ngưỡng AWS ~2.15MB</option>
-              <option value="4000000">4.0 MB · Max · thử ~1M (AWS vẫn chặn ~2.15MB, mất lưới an toàn)</option>
+              <option value="921600" data-i18n="settings.maxPayloadConservative"></option>
+              <option value="2000000" data-i18n="settings.maxPayloadBalanced"></option>
+              <option value="2100000" data-i18n="settings.maxPayloadAggressive"></option>
+              <option value="4000000" data-i18n="settings.maxPayloadMax"></option>
             </select>
-            <small>AWS chặn cứng ~2.15MB. Vượt ngưỡng = request lỗi 400 không retry. Áp dụng ngay, không cần restart.</small>
+            <small data-i18n="settings.maxPayloadHint"></small>
           </div>
           <button class="btn btn-primary" id="saveOverUsageBtn" data-i18n="settings.saveUsage"></button>
         </div>
@@ -346,6 +352,13 @@
         <!-- Outbound proxy -->
         <div class="card">
           <div class="card-header"><span class="card-title" data-i18n="settings.proxySettings"></span></div>
+          <div class="form-group">
+            <label data-i18n="settings.publicBaseURL"></label>
+            <input type="text" id="publicBaseURL" placeholder="https://azr.hian.software" autocomplete="off" />
+            <small data-i18n="settings.publicBaseURLHint"></small>
+            <button class="btn btn-primary btn-sm" id="savePublicBaseURLBtn" style="margin-top:0.5rem;"
+              data-i18n="settings.savePublicBaseURL"></button>
+          </div>
           <div class="form-group">
             <label data-i18n="settings.proxyType"></label>
             <select id="proxyType">
@@ -520,6 +533,60 @@
             </section>
           </div>
           <p class="api-hint"><i class="fa-solid fa-key"></i><span data-i18n="api.statsHint"></span></p>
+        </section>
+      </div>
+
+      <!-- API Log tab -->
+      <div id="tabApilog" class="tab-content hidden">
+        <section class="card" aria-labelledby="apiLogTitle">
+          <div class="card-header">
+            <span class="card-title" id="apiLogTitle" data-i18n="apilog.title"></span>
+            <div class="card-actions">
+              <select id="apiLogKeyFilter" class="w-48!" data-i18n-aria-label="apilog.filterKey">
+                <option value="" data-i18n="apilog.allKeys"></option>
+              </select>
+              <button class="btn btn-outline btn-sm" id="apiLogRefreshBtn" type="button"><i
+                  class="fa-solid fa-arrows-rotate" aria-hidden="true"></i><span class="btn-text"
+                  data-i18n="apilog.refresh"></span></button>
+            </div>
+          </div>
+          <p class="help-block" data-i18n="apilog.hint"></p>
+          <div class="apilog-summary" id="apiLogSummary"></div>
+          <div class="table-scroll">
+            <table class="data-table" id="apiLogTable">
+              <thead>
+                <tr>
+                  <th data-i18n="apilog.colTime"></th>
+                  <th data-i18n="apilog.colKey"></th>
+                  <th data-i18n="apilog.colModel"></th>
+                  <th class="num" data-i18n="apilog.colInput"></th>
+                  <th class="num" data-i18n="apilog.colOutput"></th>
+                  <th class="num" data-i18n="apilog.colTokens"></th>
+                  <th class="num" data-i18n="apilog.colCredits"></th>
+                </tr>
+              </thead>
+              <tbody id="apiLogBody"></tbody>
+            </table>
+          </div>
+          <div id="apiLogEmpty" class="muted-text hidden" style="padding:1rem 0;text-align:center;"
+            data-i18n="apilog.empty"></div>
+        </section>
+      </div>
+
+      <!-- Usage check tab -->
+      <div id="tabUsage" class="tab-content hidden">
+        <section class="card" aria-labelledby="usageTitle">
+          <div class="card-header">
+            <span class="card-title" id="usageTitle" data-i18n="usage.title"></span>
+            <button class="btn btn-outline btn-sm" id="usageRefreshBtn" type="button"><i
+                class="fa-solid fa-arrows-rotate" aria-hidden="true"></i><span class="btn-text"
+                data-i18n="usage.refresh"></span></button>
+          </div>
+          <p class="help-block" data-i18n="usage.hint"></p>
+          <div class="usage-totals" id="usageTotals"></div>
+          <div id="usageList"></div>
+          <div id="usageEmpty" class="muted-text hidden" style="padding:1rem 0;text-align:center;"
+            data-i18n="usage.empty"></div>
         </section>
       </div>
 

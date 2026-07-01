@@ -38,6 +38,13 @@ type KiroSsoSession struct {
 	LoopbackReady  chan struct{} // closed when loopback server is listening
 	loopbackMu     sync.Mutex    // protects leg-2 single-shot dispatch
 
+	// RedirectBase is the externally reachable base URL the IdP should redirect
+	// the browser back to (e.g. "https://azr.hian.software" or "https://host:3128").
+	// Empty means "http://localhost:<LoopbackPort>" (pure local flow). Used so the
+	// OAuth redirect_uri is not hard-coded to localhost when the proxy is reached
+	// through a custom domain / reverse proxy.
+	RedirectBase string
+
 	// IdP metadata (nhận từ Kiro portal redirect — không có sub-path, root redirect_uri)
 	IssuerURL   string
 	IdPClientID string
@@ -170,6 +177,17 @@ func serveLoopback(s *KiroSsoSession, v4Listener net.Listener, port int) {
 	}
 }
 
+// redirectBaseURL returns the base used to build OAuth redirect_uri values.
+// When RedirectBase is set (custom domain / reverse proxy), it is used verbatim
+// (the reverse proxy is responsible for routing it to this loopback port).
+// Otherwise it falls back to http://localhost:<LoopbackPort> for the pure local flow.
+func (s *KiroSsoSession) redirectBaseURL() string {
+	if s.RedirectBase != "" {
+		return strings.TrimRight(s.RedirectBase, "/")
+	}
+	return fmt.Sprintf("http://localhost:%d", s.LoopbackPort)
+}
+
 // Microsoft Entra allow-list — chỉ các host này được phép làm external IdP endpoint.
 // Leading dot ensures subdomain boundary: "evil-microsoftonline.com" cannot match.
 var allowedExternalIdpHosts = []string{
@@ -186,7 +204,10 @@ var allowedExternalIdpHosts = []string{
 // loginHint có thể để trống — user sẽ nhập email ở Kiro portal.
 // Leg-1 URL gửi đúng 5 params như zsec: state, code_challenge, code_challenge_method,
 // redirect_uri (root path), redirect_from. KHÔNG gửi client_id, response_type, scope.
-func StartKiroSsoLogin(loginHint string) (sessionID, authorizeURL string, loopbackPort int, err error) {
+// redirectBase, when non-empty, is the externally reachable base URL (scheme+host
+// [+port], no path) the IdP must redirect back to — e.g. "https://azr.hian.software".
+// Pass "" for the pure local flow (falls back to http://localhost:<port>).
+func StartKiroSsoLogin(loginHint, redirectBase string) (sessionID, authorizeURL string, loopbackPort int, err error) {
 	// 0. Một user chỉ có 1 flow login active tại một thời điểm. Mỗi session pending
 	// giữ 1 port loopback trong tối đa 10 phút; nếu user bấm "start" nhiều lần (login
 	// dở dang, đổi tài khoản, refresh trang) thì các session cũ leak port, và chỉ có
@@ -205,8 +226,14 @@ func StartKiroSsoLogin(loginHint string) (sessionID, authorizeURL string, loopba
 		return "", "", 0, fmt.Errorf("không thể bind loopback server: %w", err)
 	}
 
-	// 3. Leg-1 redirect_uri = root path (giống zsec SocialRedirectURI)
-	redirectURI := fmt.Sprintf("http://localhost:%d", loopbackPort)
+	// 3. Leg-1 redirect_uri = root path (giống zsec SocialRedirectURI).
+	// Dùng redirectBase khi proxy được truy cập qua custom domain / reverse proxy,
+	// nếu không thì fallback localhost:<port> cho flow local thuần.
+	redirectBase = strings.TrimRight(strings.TrimSpace(redirectBase), "/")
+	redirectURI := redirectBase
+	if redirectURI == "" {
+		redirectURI = fmt.Sprintf("http://localhost:%d", loopbackPort)
+	}
 
 	// 4. Xây dựng Kiro portal authorize URL (Leg-1) — đúng 5 params
 	params := url.Values{}
@@ -228,6 +255,7 @@ func StartKiroSsoLogin(loginHint string) (sessionID, authorizeURL string, loopba
 		LoopbackPort:  loopbackPort,
 		LoopbackReady: make(chan struct{}),
 		LoginHint:     loginHint,
+		RedirectBase:  redirectBase,
 		ResultCh:      make(chan KiroSsoResult, 1),
 		ExpiresAt:     time.Now().Add(10 * time.Minute),
 	}
@@ -517,8 +545,8 @@ func (s *KiroSsoSession) resolveIdpAuthorizeURL(query url.Values) (string, error
 	idpState := uuid.New().String()
 
 	// Xây dựng Microsoft Entra authorize URL (Leg-2)
-	// redirect_uri = http://localhost:<port>/oauth/callback (zsec OAuthCallbackPath)
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth/callback", s.LoopbackPort)
+	// redirect_uri = <base>/oauth/callback (zsec OAuthCallbackPath)
+	redirectURI := s.redirectBaseURL() + "/oauth/callback"
 
 	idpParams := url.Values{}
 	idpParams.Set("client_id", clientID)
@@ -592,7 +620,7 @@ func (s *KiroSsoSession) handleOAuthCallback(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Đổi code lấy token từ IdP
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth/callback", s.LoopbackPort)
+	redirectURI := s.redirectBaseURL() + "/oauth/callback"
 
 	if s.IdPTokenEndpoint == "" {
 		writeSSOErrorPage(w, "Thiếu thông tin IdP — vui lòng thử lại.")

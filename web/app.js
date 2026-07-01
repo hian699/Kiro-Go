@@ -1434,6 +1434,7 @@
     $('requireApiKey').checked = d.requireApiKey;
     $('allowOverUsage').checked = d.allowOverUsage || false;
     $('maxPayloadBytes').value = String(d.maxPayloadBytes || 2000000);
+    if ($('publicBaseURL')) $('publicBaseURL').value = d.publicBaseURL || '';
     await Promise.all([loadThinkingConfig(), loadEndpointConfig(), loadProxyConfig(), loadPromptFilter(), loadApiKeys()]);
     refreshCustomSelects();
   }
@@ -1516,6 +1517,17 @@
     const d = await res.json();
     if (d.success) toast(t('settings.proxySaved'), 'success');
     else toast(t('common.saveFailed') + ': ' + (d.error || ''), 'error');
+  }
+  async function savePublicBaseURL() {
+    const url = $('publicBaseURL').value.trim();
+    try {
+      const res = await api('/settings', { method: 'POST', body: JSON.stringify({ publicBaseURL: url }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.success === false) throw new Error(d.error || t('common.saveFailed'));
+      toast(t('settings.publicBaseURLSaved'), 'success');
+    } catch (e) {
+      toast((e && e.message) || t('common.saveFailed'), 'error');
+    }
   }
   async function importProxies() {
     const raw = $('proxyImportList').value.trim();
@@ -3104,6 +3116,148 @@
     });
   }
 
+  // API Log + Usage check
+  function formatLogTime(unixSec) {
+    if (!unixSec) return '';
+    const d = new Date(unixSec * 1000);
+    const pad = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+
+  async function loadApiLog() {
+    const body = $('apiLogBody');
+    if (!body) return;
+    const keyId = $('apiLogKeyFilter') ? $('apiLogKeyFilter').value : '';
+    let entries = [];
+    try {
+      const qs = keyId ? ('?apiKeyId=' + encodeURIComponent(keyId)) : '';
+      const res = await api('/request-logs' + qs);
+      const d = await res.json().catch(() => ({}));
+      entries = Array.isArray(d.logs) ? d.logs : [];
+    } catch (e) {
+      entries = [];
+    }
+    renderApiLog(entries);
+  }
+
+  function renderApiLog(entries) {
+    const body = $('apiLogBody');
+    const empty = $('apiLogEmpty');
+    const summary = $('apiLogSummary');
+    if (!body) return;
+    if (!entries.length) {
+      body.innerHTML = '';
+      if (empty) empty.classList.remove('hidden');
+      if (summary) summary.innerHTML = '';
+      return;
+    }
+    if (empty) empty.classList.add('hidden');
+
+    let sumInput = 0, sumOutput = 0, sumCredits = 0;
+    const rows = entries.map(e => {
+      sumInput += e.inputTokens || 0;
+      sumOutput += e.outputTokens || 0;
+      sumCredits += e.credits || 0;
+      const keyLabel = e.apiKeyName
+        ? escapeHtml(e.apiKeyName)
+        : (e.apiKeyMasked ? '<span class="font-mono text-xs">' + escapeHtml(e.apiKeyMasked) + '</span>'
+          : '<span class="muted-text">' + escapeHtml(t('apilog.noKey')) + '</span>');
+      return '<tr>' +
+        '<td class="text-xs font-mono">' + escapeHtml(formatLogTime(e.time)) + '</td>' +
+        '<td>' + keyLabel + '</td>' +
+        '<td class="text-xs">' + escapeHtml(e.model || '') + '</td>' +
+        '<td class="num">' + escapeHtml(formatNumber(e.inputTokens || 0)) + '</td>' +
+        '<td class="num">' + escapeHtml(formatNumber(e.outputTokens || 0)) + '</td>' +
+        '<td class="num">' + escapeHtml(formatNumber(e.totalTokens || 0)) + '</td>' +
+        '<td class="num">' + escapeHtml(formatNumber(e.credits || 0)) + '</td>' +
+        '</tr>';
+    }).join('');
+    body.innerHTML = rows;
+
+    if (summary) {
+      summary.innerHTML =
+        '<span class="apilog-chip">' + escapeHtml(t('apilog.totalRequests', entries.length)) + '</span>' +
+        '<span class="apilog-chip">' + escapeHtml(t('apilog.totalTokens', formatNumber(sumInput + sumOutput))) + '</span>' +
+        '<span class="apilog-chip">' + escapeHtml(t('apilog.totalCredits', formatNumber(sumCredits))) + '</span>';
+    }
+  }
+
+  function populateApiLogKeyFilter() {
+    const sel = $('apiLogKeyFilter');
+    if (!sel) return;
+    const prev = sel.value;
+    const opts = ['<option value="">' + escapeHtml(t('apilog.allKeys')) + '</option>'];
+    (apiKeysCache || []).forEach(k => {
+      const label = k.name || k.keyMasked || k.id;
+      opts.push('<option value="' + escapeAttr(k.id) + '">' + escapeHtml(label) + '</option>');
+    });
+    sel.innerHTML = opts.join('');
+    sel.value = prev;
+    refreshCustomSelects($('tabApilog'));
+  }
+
+  async function loadUsageCheck() {
+    const listEl = $('usageList');
+    if (!listEl) return;
+    let data = null;
+    try {
+      const res = await api('/usage-summary');
+      data = await res.json().catch(() => null);
+    } catch (e) {
+      data = null;
+    }
+    renderUsageCheck(data);
+  }
+
+  function renderUsageCheck(data) {
+    const listEl = $('usageList');
+    const empty = $('usageEmpty');
+    const totalsEl = $('usageTotals');
+    if (!listEl) return;
+    const keys = data && Array.isArray(data.keys) ? data.keys : [];
+    if (!keys.length) {
+      listEl.innerHTML = '';
+      if (empty) empty.classList.remove('hidden');
+      if (totalsEl) totalsEl.innerHTML = '';
+      return;
+    }
+    if (empty) empty.classList.add('hidden');
+
+    if (totalsEl && data.totals) {
+      const tt = data.totals;
+      totalsEl.innerHTML =
+        '<div class="stat-card"><div class="stat-card-title">' + escapeHtml(t('usage.totalRequests')) + '</div>' +
+          '<div class="stat-value">' + escapeHtml(formatNumber(tt.requests || 0)) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-card-title">' + escapeHtml(t('usage.totalTokens')) + '</div>' +
+          '<div class="stat-value">' + escapeHtml(formatNumber(tt.tokensUsed || 0)) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-card-title">' + escapeHtml(t('usage.totalCredits')) + '</div>' +
+          '<div class="stat-value">' + escapeHtml(formatNumber(tt.creditsUsed || 0)) + '</div></div>';
+    }
+
+    listEl.innerHTML = keys.map(k => {
+      const name = k.name ? escapeHtml(k.name) : '<span class="muted-text">' + escapeHtml(t('apiKeys.unnamed')) + '</span>';
+      const masked = '<span class="text-xs muted-text font-mono">' + escapeHtml(k.keyMasked || '') + '</span>';
+      const disabled = !k.enabled
+        ? '<span class="text-xs" style="background:rgba(239,68,68,0.15);color:#ef4444;padding:1px 6px;border-radius:4px;">' + escapeHtml(t('apiKeys.disabled')) + '</span>'
+        : '';
+      const over = (k.overToken || k.overCredit)
+        ? '<span class="text-xs" style="background:rgba(239,68,68,0.15);color:#ef4444;padding:1px 6px;border-radius:4px;">' + escapeHtml(t('usage.overLimit')) + '</span>'
+        : '';
+      const tokensLine = usageLine(t('apiKeys.tokens'), k.tokensUsed || 0, k.tokenLimit || 0);
+      const creditsLine = usageLine(t('apiKeys.credits'), k.creditsUsed || 0, k.creditLimit || 0);
+      const requestsLine = '<div class="text-xs muted-text">' + escapeHtml(t('apiKeys.requests')) + ': ' + escapeHtml(formatNumber(k.requestsCount || 0)) + '</div>';
+      return '<div class="card" style="margin-top:0.5rem;padding:0.75rem;">' +
+        '<div class="flex items-center gap-2" style="flex-wrap:wrap;">' +
+          '<span class="font-semibold">' + name + '</span>' + disabled + over + masked +
+        '</div>' +
+        '<div style="margin-top:0.5rem;display:grid;gap:0.35rem;">' +
+          tokensLine + creditsLine + requestsLine +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
   // Tabs
   function switchTab(tab) {
     qsa('.tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
@@ -3111,6 +3265,8 @@
     $('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.remove('hidden');
     if (tab === 'console') openConsole();
     else closeConsole();
+    if (tab === 'apilog') { populateApiLogKeyFilter(); loadApiLog(); }
+    else if (tab === 'usage') loadUsageCheck();
   }
 
   // Event wiring
@@ -3152,6 +3308,13 @@
     $('logoutBtn').addEventListener('click', logout);
 
     qsa('#tabBar .tab').forEach(tab => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
+
+    const apiLogRefresh = $('apiLogRefreshBtn');
+    if (apiLogRefresh) apiLogRefresh.addEventListener('click', loadApiLog);
+    const apiLogKeyFilter = $('apiLogKeyFilter');
+    if (apiLogKeyFilter) apiLogKeyFilter.addEventListener('change', loadApiLog);
+    const usageRefresh = $('usageRefreshBtn');
+    if (usageRefresh) usageRefresh.addEventListener('click', loadUsageCheck);
 
     qsa('[data-copy]').forEach(btn => btn.addEventListener('click', async () => {
       const id = btn.dataset.copy;
@@ -3217,6 +3380,8 @@
     $('changePasswordBtn').addEventListener('click', changePassword);
     $('proxyType').addEventListener('change', onProxyTypeChange);
     $('saveProxyBtn').addEventListener('click', saveProxyConfig);
+    const savePbu = $('savePublicBaseURLBtn');
+    if (savePbu) savePbu.addEventListener('click', savePublicBaseURL);
     $('proxyImportBtn').addEventListener('click', importProxies);
     $('resetStatsBtn').addEventListener('click', resetStats);
     bindApiKeyEvents();

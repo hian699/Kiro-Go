@@ -3378,3 +3378,57 @@ img.brand-icon {
 .console-line.lvl-error {
   color: #fca5a5;
 }
+
+/* API Log + Usage tabs */
+.table-scroll {
+  overflow-x: auto;
+  margin-top: 0.75rem;
+}
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+.data-table th,
+.data-table td {
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.15);
+  white-space: nowrap;
+}
+.data-table th {
+  font-weight: 600;
+  color: var(--muted, #6b7280);
+  position: sticky;
+  top: 0;
+  background: var(--card-bg, #fff);
+}
+.data-table th.num,
+.data-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.data-table tbody tr:hover {
+  background: rgba(127, 127, 127, 0.06);
+}
+.apilog-summary,
+.usage-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.usage-totals .stat-card {
+  flex: 1 1 140px;
+  min-width: 120px;
+}
+.apilog-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+  font-size: 0.75rem;
+  font-weight: 600;
+}

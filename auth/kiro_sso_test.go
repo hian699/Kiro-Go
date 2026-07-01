@@ -247,7 +247,7 @@ func TestRefreshExternalIdpToken_MissingClientID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartKiroSsoLogin(t *testing.T) {
-	sessionID, authorizeURL, loopbackPort, err := StartKiroSsoLogin("test@company.com")
+	sessionID, authorizeURL, loopbackPort, err := StartKiroSsoLogin("test@company.com", "")
 	if err != nil {
 		t.Fatalf("unexpected error starting login: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestStartKiroSsoLogin(t *testing.T) {
 }
 
 func TestStartKiroSsoLogin_NoLoginHint(t *testing.T) {
-	sessionID, authorizeURL, _, err := StartKiroSsoLogin("")
+	sessionID, authorizeURL, _, err := StartKiroSsoLogin("", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

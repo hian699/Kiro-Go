@@ -334,6 +334,50 @@ func (h *Handler) authenticateForOpenAI(w http.ResponseWriter, r *http.Request) 
 	return withApiKeyContext(r, entry)
 }
 
+// resolvePublicBaseURL determines the externally reachable base URL (scheme://host[:port])
+// used to build OAuth redirect_uri values, so they survive a reverse proxy / custom domain
+// instead of being hard-coded to localhost.
+//
+// Priority:
+//  1. config.PublicBaseURL (explicit operator override) — always wins when set.
+//  2. Auto-detect from the request: X-Forwarded-Proto / X-Forwarded-Host (set by reverse
+//     proxies), falling back to the request's own scheme + Host header.
+//
+// Returns "" only when nothing can be determined (e.g. empty Host), in which case the SSO
+// flow falls back to http://localhost:<loopbackPort>.
+func resolvePublicBaseURL(r *http.Request) string {
+	if override := config.GetPublicBaseURL(); override != "" {
+		return override
+	}
+
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	// X-Forwarded-Host may carry a comma-separated list; the first is the original client-facing host.
+	if i := strings.IndexByte(host, ','); i >= 0 {
+		host = strings.TrimSpace(host[:i])
+	}
+
+	scheme := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+	if i := strings.IndexByte(scheme, ','); i >= 0 {
+		scheme = strings.TrimSpace(scheme[:i])
+	}
+	if scheme == "" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+
+	return scheme + "://" + host
+}
+
 // ServeHTTP 路由分发
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
@@ -1232,7 +1276,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		}
 		outputTokens = estimateClaudeOutputTokens(outputContent, thinkingOutput, toolUses)
 
-		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
+		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
@@ -1324,14 +1368,31 @@ func (h *Handler) recordSuccess(inputTokens, outputTokens int, credits float64) 
 // recordSuccessForApiKey is recordSuccess + per-API-key usage attribution.
 // When apiKeyID is empty (legacy single-key path or unauthenticated path), only the
 // global counters are updated. Persistence errors are logged but do not propagate.
-func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTokens int, credits float64) {
+// model is recorded in the per-request log for the admin API Log view.
+func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTokens int, credits float64, model string) {
 	h.recordSuccess(inputTokens, outputTokens, credits)
-	if apiKeyID == "" {
-		return
+
+	keyName := ""
+	keyMasked := ""
+	if apiKeyID != "" {
+		if entry := config.GetApiKeyEntry(apiKeyID); entry != nil {
+			keyName = entry.Name
+			keyMasked = config.MaskApiKey(entry.Key)
+		}
+		if err := config.RecordApiKeyUsage(apiKeyID, int64(inputTokens+outputTokens), credits); err != nil {
+			logger.Warnf("[ApiKey] failed to record usage for key %s: %v", apiKeyID, err)
+		}
 	}
-	if err := config.RecordApiKeyUsage(apiKeyID, int64(inputTokens+outputTokens), credits); err != nil {
-		logger.Warnf("[ApiKey] failed to record usage for key %s: %v", apiKeyID, err)
-	}
+
+	logRequest(RequestLogEntry{
+		APIKeyID:     apiKeyID,
+		APIKeyName:   keyName,
+		APIKeyMasked: keyMasked,
+		Model:        model,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		Credits:      credits,
+	})
 }
 
 func (h *Handler) recordFailure() {
@@ -1412,7 +1473,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 		}
 		outputTokens = estimateClaudeOutputTokens(finalContent, rawThinkingContent, toolUses)
 
-		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
+		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
@@ -1858,7 +1919,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 			outputTokens += estimateApproxTokens(tc.Function.Arguments)
 		}
 
-		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
+		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 
@@ -1961,7 +2022,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 		}
 		outputTokens = estimateOpenAIOutputTokens(finalContent, reasoningContent, toolUses)
 
-		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
+		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 
@@ -2130,6 +2191,10 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiGetStats(w, r)
 	case path == "/stats/reset" && r.Method == "POST":
 		h.apiResetStats(w, r)
+	case path == "/request-logs" && r.Method == "GET":
+		h.apiGetRequestLogs(w, r)
+	case path == "/usage-summary" && r.Method == "GET":
+		h.apiGetUsageSummary(w, r)
 	case path == "/logs" && r.Method == "GET":
 		h.apiGetLogs(w, r)
 	case path == "/logs/stream" && r.Method == "GET":
@@ -2741,7 +2806,8 @@ func (h *Handler) apiStartKiroSso(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID, authorizeURL, loopbackPort, err := auth.StartKiroSsoLogin(req.LoginHint)
+	redirectBase := resolvePublicBaseURL(r)
+	sessionID, authorizeURL, loopbackPort, err := auth.StartKiroSsoLogin(req.LoginHint, redirectBase)
 	if err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -3345,6 +3411,7 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"host":            config.GetHost(),
 		"allowOverUsage":  config.GetAllowOverUsage(),
 		"maxPayloadBytes": config.GetMaxPayloadBytes(),
+		"publicBaseURL":   config.GetPublicBaseURL(),
 	})
 }
 
@@ -3398,6 +3465,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		Password        string  `json:"password,omitempty"`
 		AllowOverUsage  *bool   `json:"allowOverUsage,omitempty"`
 		MaxPayloadBytes *int    `json:"maxPayloadBytes,omitempty"`
+		PublicBaseURL   *string `json:"publicBaseURL,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -3426,6 +3494,14 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// value takes effect on the next request — no restart or pool reload needed.
 	if req.MaxPayloadBytes != nil {
 		if err := config.UpdateMaxPayloadBytes(*req.MaxPayloadBytes); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	if req.PublicBaseURL != nil {
+		if err := config.UpdatePublicBaseURL(*req.PublicBaseURL); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
