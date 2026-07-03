@@ -2576,28 +2576,10 @@
     let skipped = 0;
     try {
       const json = JSON.parse(raw);
-      if (json.accounts && Array.isArray(json.accounts)) {
-        items = json.accounts.map(a => {
-          const c = a.credentials || {};
-          return {
-            refreshToken: c.refreshToken || a.refreshToken,
-            clientId: c.clientId || a.clientId,
-            clientSecret: c.clientSecret || a.clientSecret,
-            region: c.region || a.region,
-            authMethod: c.authMethod || a.authMethod,
-            provider: c.provider || a.provider || a.idp,
-            issuerUrl: c.issuerUrl || a.issuerUrl,
-            idpClientId: c.idpClientId || a.idpClientId,
-            scopes: c.scopes || a.scopes,
-            loginHint: c.loginHint || a.loginHint,
-            idpTokenEndpoint: c.idpTokenEndpoint || a.idpTokenEndpoint,
-            expiresAt: c.expiresAt || a.expiresAt,
-            accessToken: c.accessToken || a.accessToken,
-          };
-        });
-      } else {
-        items = Array.isArray(json) ? json : [json];
-      }
+      const rawItems = (json.accounts && Array.isArray(json.accounts))
+        ? json.accounts
+        : (Array.isArray(json) ? json : [json]);
+      items = rawItems.map(normalizeCredItem);
     } catch {
       const parsed = parseLineCredentials(raw);
       items = parsed.items;
@@ -2647,6 +2629,41 @@
     if (skipped > 0) msg += t('credentials.lineParseSkipped', skipped);
     toastPrimary(msg, { duration: 5200 });
     newIds.forEach(autoRefreshNewAccount);
+  }
+  // Normalize one credential object into the /auth/credentials payload shape.
+  // Accepts camelCase (existing exports), the {credentials:{...}} wrapper, and
+  // flat snake_case (cliproxyapi kiro export: access_token, auth_method,
+  // issuer_url, token_endpoint, ...).
+  function normalizeCredItem(a) {
+    const c = a.credentials || {};
+    const pick = (...keys) => {
+      for (const src of [c, a]) {
+        for (const k of keys) {
+          if (src[k] !== undefined && src[k] !== null && src[k] !== '') return src[k];
+        }
+      }
+      return undefined;
+    };
+    const authMethod = pick('authMethod', 'auth_method', 'type');
+    const isExternalIdp = String(authMethod || '').toLowerCase().replace('_', '') === 'externalidp';
+    const clientId = pick('clientId', 'client_id');
+    return {
+      refreshToken: pick('refreshToken', 'refresh_token'),
+      accessToken: pick('accessToken', 'access_token'),
+      // cliproxyapi external_idp puts the IdP client id in client_id; route it
+      // to idpClientId so token refresh has the right client (else 401).
+      clientId: isExternalIdp ? '' : clientId,
+      clientSecret: pick('clientSecret', 'client_secret'),
+      region: pick('region'),
+      authMethod: authMethod === 'kiro' ? '' : authMethod,
+      provider: pick('provider', 'idp'),
+      issuerUrl: pick('issuerUrl', 'issuer_url'),
+      idpClientId: pick('idpClientId', 'idp_client_id') || (isExternalIdp ? clientId : undefined),
+      scopes: pick('scopes'),
+      loginHint: pick('loginHint', 'login_hint'),
+      idpTokenEndpoint: pick('idpTokenEndpoint', 'idp_token_endpoint', 'token_endpoint'),
+      expiresAt: pick('expiresAt', 'expires_at'),
+    };
   }
   function parseLineCredentials(text) {
     const items = [];
