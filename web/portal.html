@@ -406,6 +406,82 @@
     .p-ledger-foot .dots { flex: 1; border-bottom: 1px dotted var(--p-line); transform: translateY(-0.2rem); }
     .p-ledger-foot .v { font-weight: 600; }
 
+    /* ---- Connect block — how the customer points their client here ---- */
+    .p-connect {
+      margin-top: 1.5rem;
+      padding-top: 1rem;
+      border-top: 1px dashed var(--p-line);
+    }
+    .p-connect-head {
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted-foreground);
+      margin: 0 0 0.75rem;
+    }
+    .p-conn-row {
+      display: grid;
+      grid-template-columns: minmax(4.5rem, auto) 1fr auto;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0;
+      border-bottom: 1px dotted var(--p-line);
+    }
+    .p-conn-row .k {
+      font-size: 0.75rem;
+      color: var(--muted-foreground);
+      white-space: nowrap;
+    }
+    .p-conn-row .v {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+    .p-copy {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.75rem;
+      height: 1.75rem;
+      flex: 0 0 auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--muted-foreground);
+      cursor: pointer;
+      font-size: 0.75rem;
+      transition: background-color 0.15s, color 0.15s;
+    }
+    .p-copy:hover { background: var(--accent); color: var(--foreground); }
+    .p-copy.done { color: var(--success); border-color: color-mix(in oklab, var(--success) 45%, var(--border)); }
+    .p-snippet {
+      position: relative;
+      margin-top: 0.85rem;
+    }
+    .p-snippet pre {
+      margin: 0;
+      padding: 0.75rem 2.5rem 0.75rem 0.75rem;
+      background: var(--muted);
+      border: 1px solid var(--p-line);
+      border-radius: var(--radius-md);
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      line-height: 1.6;
+      color: var(--foreground);
+      overflow-x: auto;
+      white-space: pre;
+    }
+    .p-snippet .p-copy {
+      position: absolute;
+      top: 0.4rem;
+      right: 0.4rem;
+      background: var(--card);
+    }
+
     .p-foot {
       margin-top: 1.75rem;
       text-align: center;
@@ -529,6 +605,37 @@
             <span class="v" id="ledgerFootVal"></span>
           </div>
         </div>
+
+        <div class="p-connect" id="connectBlock" style="display:none;">
+          <h3 class="p-connect-head" data-t="connectTitle"></h3>
+          <div class="p-conn-row">
+            <span class="k" data-t="connBaseUrl"></span>
+            <span class="v" id="connBaseUrl"></span>
+            <button class="p-copy" type="button" data-copy-target="connBaseUrl" aria-label="copy">
+              <i class="fa-regular fa-copy"></i>
+            </button>
+          </div>
+          <div class="p-conn-row">
+            <span class="k" data-t="connClaude"></span>
+            <span class="v" id="connClaudeUrl"></span>
+            <button class="p-copy" type="button" data-copy-target="connClaudeUrl" aria-label="copy">
+              <i class="fa-regular fa-copy"></i>
+            </button>
+          </div>
+          <div class="p-conn-row">
+            <span class="k" data-t="connOpenai"></span>
+            <span class="v" id="connOpenaiUrl"></span>
+            <button class="p-copy" type="button" data-copy-target="connOpenaiUrl" aria-label="copy">
+              <i class="fa-regular fa-copy"></i>
+            </button>
+          </div>
+          <div class="p-snippet">
+            <pre id="connSnippet"></pre>
+            <button class="p-copy" type="button" data-copy-target="connSnippet" aria-label="copy">
+              <i class="fa-regular fa-copy"></i>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -571,7 +678,12 @@
           footerNote: 'Nhật ký lưu trong bộ nhớ (1000 mục gần nhất), có thể mất khi máy chủ khởi động lại.',
           keyRequired: 'Vui lòng nhập API key',
           notFound: 'API key không hợp lệ',
-          failed: 'Kiểm tra thất bại'
+          failed: 'Kiểm tra thất bại',
+          connectTitle: 'Cách kết nối',
+          connBaseUrl: 'Base URL',
+          connClaude: 'Claude',
+          connOpenai: 'OpenAI',
+          copied: 'Đã sao chép'
         },
         en: {
           brandTag: 'Customer portal',
@@ -606,7 +718,12 @@
           footerNote: 'Ledger is kept in memory (last 1000 entries) and may reset when the server restarts.',
           keyRequired: 'Please enter an API key',
           notFound: 'Invalid API key',
-          failed: 'Check failed'
+          failed: 'Check failed',
+          connectTitle: 'How to connect',
+          connBaseUrl: 'Base URL',
+          connClaude: 'Claude',
+          connOpenai: 'OpenAI',
+          copied: 'Copied'
         }
       };
 
@@ -738,6 +855,27 @@
         } else {
           $('expiryRow').style.display = 'none';
         }
+
+        renderConnect(d);
+      }
+
+      // How-to-connect block: shows the customer where to point their client.
+      // Only meaningful for a usable key, so it's hidden otherwise.
+      function renderConnect(d) {
+        var block = $('connectBlock');
+        var base = (d.baseURL || '').replace(/\/+$/, '');
+        if (!d.valid || !base) { block.style.display = 'none'; return; }
+        block.style.display = '';
+        $('connectBlock').querySelector('.p-connect-head').textContent = t('connectTitle');
+        $('connBaseUrl').textContent = base;
+        $('connClaudeUrl').textContent = base + '/v1/messages';
+        $('connOpenaiUrl').textContent = base + '/v1/chat/completions';
+        var key = currentKey() || 'sk-...';
+        $('connSnippet').textContent =
+          'curl ' + base + '/v1/chat/completions \\\n' +
+          '  -H "Authorization: Bearer ' + key + '" \\\n' +
+          '  -H "Content-Type: application/json" \\\n' +
+          '  -d \'{"model":"claude-sonnet-4","messages":[{"role":"user","content":"Hi"}]}\'';
       }
 
       function renderLedger(logs) {
@@ -838,6 +976,30 @@
         lang = b.dataset.lang;
         localStorage.setItem('kiro_lang', lang);
         applyLang();
+      });
+
+      // Copy buttons (connect block): copy the target element's text, flash confirmation.
+      document.addEventListener('click', function (e) {
+        var btn = e.target.closest('.p-copy');
+        if (!btn) return;
+        var target = $(btn.getAttribute('data-copy-target'));
+        if (!target) return;
+        var text = target.textContent || '';
+        var done = function () {
+          btn.classList.add('done');
+          setTimeout(function () { btn.classList.remove('done'); }, 1400);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, done);
+        } else {
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand('copy'); } catch (err) { }
+          document.body.removeChild(ta);
+          done();
+        }
       });
 
       applyTheme(getThemePref());

@@ -221,6 +221,7 @@ type apiKeySelfInfo struct {
 	Expired       bool    `json:"expired"`
 	ExpiresAt     int64   `json:"expiresAt,omitempty"`
 	Valid         bool    `json:"valid"` // false when the key is disabled/expired/over-limit
+	BaseURL       string  `json:"baseURL,omitempty"` // externally reachable API base, so the customer knows where to point their client
 }
 
 // apiKeySelfLogEntry is one row of a customer's own usage history. Deliberately
@@ -340,5 +341,23 @@ func (h *Handler) apiKeySelfInfo(w http.ResponseWriter, r *http.Request) {
 		Expired:       expired,
 		ExpiresAt:     entry.ExpiresAt,
 		Valid:         entry.Enabled && !expired && !overToken && !overCredit,
+		BaseURL:       selfServiceBaseURL(r),
 	})
+}
+
+// selfServiceBaseURL returns the externally reachable API base URL to show the
+// customer. Prefers the admin-configured PublicBaseURL; falls back to the scheme
+// and host of the incoming request when unset.
+func selfServiceBaseURL(r *http.Request) string {
+	if u := config.GetPublicBaseURL(); u != "" {
+		return u
+	}
+	scheme := "https"
+	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
+		scheme = "http"
+	}
+	if r.Host == "" {
+		return ""
+	}
+	return scheme + "://" + r.Host
 }

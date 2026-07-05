@@ -1747,6 +1747,7 @@
               '<input type="checkbox" data-apikey-action="toggle" data-id="' + id + '"' + (item.enabled ? ' checked' : '') + ' />' +
               '<span class="slider"></span>' +
             '</label>' +
+            '<button class="btn btn-outline btn-sm" type="button" data-apikey-action="portal" data-id="' + id + '" title="' + escapeAttr(t('apiKeys.portalLinkHint')) + '"><i class="fa-solid fa-link"></i></button>' +
             '<button class="btn btn-outline btn-sm" type="button" data-apikey-action="edit" data-id="' + id + '">' + escapeHtml(t('apiKeys.actionEdit')) + '</button>' +
             '<button class="btn btn-outline btn-sm" type="button" data-apikey-action="reset" data-id="' + id + '">' + escapeHtml(t('apiKeys.actionReset')) + '</button>' +
             '<button class="btn btn-danger btn-sm" type="button" data-apikey-action="delete" data-id="' + id + '">' + escapeHtml(t('apiKeys.actionDelete')) + '</button>' +
@@ -1951,6 +1952,18 @@
     }
   }
 
+  // Copies the self-service portal URL so the seller can hand it to a customer
+  // alongside their key. Prefers the configured public base URL, else this origin.
+  async function copyPortalLink() {
+    const base = (($('publicBaseURL') && $('publicBaseURL').value.trim()) || location.origin).replace(/\/+$/, '');
+    try {
+      await copyText(base + '/check');
+      toast(t('apiKeys.portalLinkCopied'), 'success');
+    } catch (e) {
+      toast((e && e.message) || t('common.failed'), 'error');
+    }
+  }
+
   function showNewApiKey(plaintext) {
     $('apiKeyShowValue').value = plaintext || '';
     openDialog('apiKeyShowModal');
@@ -1990,6 +2003,7 @@
         if (action === 'edit') openApiKeyModal(entry);
         else if (action === 'delete') deleteApiKeyEntry(id, name);
         else if (action === 'reset') resetApiKeyUsageEntry(id, name);
+        else if (action === 'portal') copyPortalLink();
       });
       list.addEventListener('change', e => {
         const select = e.target.closest('input[data-apikey-action="select"]');

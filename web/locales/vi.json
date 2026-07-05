@@ -497,6 +497,8 @@
   "apiKeys.actionEdit": "Sửa",
   "apiKeys.actionDelete": "Xóa",
   "apiKeys.actionReset": "Đặt lại sử dụng",
+  "apiKeys.portalLinkHint": "Sao chép link tra cứu để gửi cho khách",
+  "apiKeys.portalLinkCopied": "Đã sao chép link cổng khách hàng",
   "apiKeys.confirmDelete": "Xóa key \"{0}\"?",
   "apiKeys.confirmReset": "Đặt lại bộ đếm sử dụng cho \"{0}\"?",
   "apiKeys.deleteSuccess": "Đã xóa key",

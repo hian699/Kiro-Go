@@ -497,6 +497,8 @@
   "apiKeys.actionEdit": "Edit",
   "apiKeys.actionDelete": "Delete",
   "apiKeys.actionReset": "Reset Usage",
+  "apiKeys.portalLinkHint": "Copy customer portal link",
+  "apiKeys.portalLinkCopied": "Portal link copied",
   "apiKeys.confirmDelete": "Delete key \"{0}\"?",
   "apiKeys.confirmReset": "Reset usage counters for \"{0}\"?",
   "apiKeys.deleteSuccess": "Key deleted",

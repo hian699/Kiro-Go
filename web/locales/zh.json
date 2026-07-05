@@ -497,6 +497,8 @@
   "apiKeys.actionEdit": "编辑",
   "apiKeys.actionDelete": "删除",
   "apiKeys.actionReset": "重置用量",
+  "apiKeys.portalLinkHint": "复制客户自助查询链接",
+  "apiKeys.portalLinkCopied": "已复制查询链接",
   "apiKeys.confirmDelete": "确定删除 Key \"{0}\"？",
   "apiKeys.confirmReset": "确定将 \"{0}\" 的用量计数清零？",
   "apiKeys.deleteSuccess": "Key 已删除",
