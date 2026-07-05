@@ -3388,8 +3388,7 @@
         '<td>' + keyLabel + '</td>' +
         '<td class="text-xs">' + escapeHtml(e.model || '') + '</td>' +
         '<td>' + (isError ? dash : accountLabel) + '</td>' +
-        '<td class="num">' + numOrDash(e.inputTokens) + '</td>' +
-        '<td class="num">' + numOrDash(e.outputTokens) + '</td>' +
+        '<td class="num text-xs"><span style="color:#22c55e;">&#9660; ' + numOrDash(e.inputTokens) + '</span> / <span style="color:#f59e0b;">&#9650; ' + numOrDash(e.outputTokens) + '</span></td>' +
         '<td class="num">' + numOrDash(e.totalTokens) + '</td>' +
         '<td class="num">' + numOrDash(e.credits) + '</td>' +
         '<td class="num text-xs">' + durationCell + '</td>' +
@@ -3424,69 +3423,6 @@
     refreshCustomSelects($('tabApilog'));
   }
 
-  async function loadUsageCheck() {
-    const listEl = $('usageList');
-    if (!listEl) return;
-    let data = null;
-    try {
-      const res = await api('/usage-summary');
-      data = await res.json().catch(() => null);
-    } catch (e) {
-      data = null;
-    }
-    renderUsageCheck(data);
-  }
-
-  function renderUsageCheck(data) {
-    const listEl = $('usageList');
-    const empty = $('usageEmpty');
-    const totalsEl = $('usageTotals');
-    if (!listEl) return;
-    const keys = data && Array.isArray(data.keys) ? data.keys : [];
-    if (!keys.length) {
-      listEl.innerHTML = '';
-      if (empty) empty.classList.remove('hidden');
-      if (totalsEl) totalsEl.innerHTML = '';
-      return;
-    }
-    if (empty) empty.classList.add('hidden');
-
-    if (totalsEl && data.totals) {
-      const tt = data.totals;
-      totalsEl.innerHTML =
-        '<div class="stat-card"><div class="stat-card-title">' + escapeHtml(t('usage.totalRequests')) + '</div>' +
-          '<div class="stat-value">' + escapeHtml(formatNumber(tt.requests || 0)) + '</div></div>' +
-        '<div class="stat-card"><div class="stat-card-title">' + escapeHtml(t('usage.totalTokens')) + '</div>' +
-          '<div class="stat-value">' + escapeHtml(formatNumber(tt.tokensUsed || 0)) + '</div></div>' +
-        '<div class="stat-card"><div class="stat-card-title">' + escapeHtml(t('usage.totalCredits')) + '</div>' +
-          '<div class="stat-value">' + escapeHtml(formatNumber(tt.creditsUsed || 0)) + '</div></div>';
-    }
-
-    listEl.innerHTML = keys.map(k => {
-      const name = k.name ? escapeHtml(k.name) : '<span class="muted-text">' + escapeHtml(t('apiKeys.unnamed')) + '</span>';
-      const masked = '<span class="text-xs muted-text font-mono">' + escapeHtml(k.keyMasked || '') + '</span>';
-      const disabled = !k.enabled
-        ? '<span class="text-xs" style="background:rgba(239,68,68,0.15);color:#ef4444;padding:1px 6px;border-radius:4px;">' + escapeHtml(t('apiKeys.disabled')) + '</span>'
-        : '';
-      const over = (k.overToken || k.overCredit)
-        ? '<span class="text-xs" style="background:rgba(239,68,68,0.15);color:#ef4444;padding:1px 6px;border-radius:4px;">' + escapeHtml(t('usage.overLimit')) + '</span>'
-        : '';
-      const expiredBadge = apiKeyExpiryBadge(k.expiresAt);
-      const expiryLine = apiKeyExpiryLine(k.expiresAt);
-      const tokensLine = usageLine(t('apiKeys.tokens'), k.tokensUsed || 0, k.tokenLimit || 0);
-      const creditsLine = usageLine(t('apiKeys.credits'), k.creditsUsed || 0, k.creditLimit || 0);
-      const requestsLine = '<div class="text-xs muted-text">' + escapeHtml(t('apiKeys.requests')) + ': ' + escapeHtml(formatNumber(k.requestsCount || 0)) + '</div>';
-      return '<div class="card" style="margin-top:0.5rem;padding:0.75rem;">' +
-        '<div class="flex items-center gap-2" style="flex-wrap:wrap;">' +
-          '<span class="font-semibold">' + name + '</span>' + disabled + over + expiredBadge + masked +
-        '</div>' +
-        '<div style="margin-top:0.5rem;display:grid;gap:0.35rem;">' +
-          tokensLine + creditsLine + requestsLine + expiryLine +
-        '</div>' +
-      '</div>';
-    }).join('');
-  }
-
   // Tabs
   let tabPollTimer = null;
   const TAB_POLL_MS = 5000;
@@ -3505,7 +3441,6 @@
     else closeConsole();
     stopTabPolling();
     if (tab === 'apilog') { populateApiLogKeyFilter(); loadApiLog(); startTabPolling(loadApiLog); }
-    else if (tab === 'usage') { loadUsageCheck(); startTabPolling(loadUsageCheck); }
   }
 
   // Event wiring
@@ -3552,9 +3487,6 @@
     if (apiLogRefresh) apiLogRefresh.addEventListener('click', loadApiLog);
     const apiLogKeyFilter = $('apiLogKeyFilter');
     if (apiLogKeyFilter) apiLogKeyFilter.addEventListener('change', loadApiLog);
-    const usageRefresh = $('usageRefreshBtn');
-    if (usageRefresh) usageRefresh.addEventListener('click', loadUsageCheck);
-
     qsa('[data-copy]').forEach(btn => btn.addEventListener('click', async () => {
       const id = btn.dataset.copy;
       const target = $(id);
