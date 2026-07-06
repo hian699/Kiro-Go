@@ -9,6 +9,7 @@ import (
 	"io"
 	"kiro-go/config"
 	"kiro-go/logger"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -105,6 +106,19 @@ func ResolveAccountProxyURL(account *config.Account) string {
 	return config.GetProxyURL()
 }
 
+// ResolveAccountProxyURLStrict is like ResolveAccountProxyURL but enforces the
+// global RequireProxy flag: when no proxy is configured for the account and
+// require-proxy is on, it returns an error instead of "" so the caller fails
+// the account (and rotates) rather than connecting directly and leaking the
+// real IP. The error message contains "require-proxy" for failover matching.
+func ResolveAccountProxyURLStrict(account *config.Account) (string, error) {
+	url := ResolveAccountProxyURL(account)
+	if url == "" && config.GetRequireProxy() {
+		return "", fmt.Errorf("require-proxy: no proxy configured for account")
+	}
+	return url, nil
+}
+
 // buildKiroTransport constructs an HTTP Transport with optional outbound proxy support.
 func buildKiroTransport(proxyURL string) *http.Transport {
 	t := &http.Transport{
@@ -113,6 +127,14 @@ func buildKiroTransport(proxyURL string) *http.Transport {
 		IdleConnTimeout:     90 * time.Second,
 		DisableCompression:  false,
 		ForceAttemptHTTP2:   true,
+		// Cap the connect/proxy-handshake phase so a dead or hung proxy fails
+		// fast and the request rotates to another account, instead of hanging
+		// for the full 5-minute stream timeout. The 5-minute client timeout
+		// still covers the streaming body once connected.
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
 	}
 	if proxyURL != "" {
 		if u, err := url.Parse(proxyURL); err == nil {

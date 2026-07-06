@@ -7,6 +7,8 @@ import (
 	"kiro-go/config"
 	"net/http"
 	"net/url"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -204,6 +206,47 @@ func TestInitKiroHttpClientKeepsShortRestTimeout(t *testing.T) {
 	}
 	if restClient.Timeout != 30*time.Second {
 		t.Fatalf("expected REST timeout to stay 30s, got %s", restClient.Timeout)
+	}
+}
+
+func TestResolveAccountProxyURLStrictBlocksWhenRequired(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.UpdateRequireProxy(true); err != nil {
+		t.Fatalf("set require-proxy: %v", err)
+	}
+	acc := &config.Account{ID: "a1"} // no per-account proxy, no global proxy
+	_, err := ResolveAccountProxyURLStrict(acc)
+	if err == nil {
+		t.Fatalf("expected error when require-proxy on and no proxy configured")
+	}
+	if !strings.Contains(err.Error(), "require-proxy") {
+		t.Fatalf("error should contain marker, got: %v", err)
+	}
+}
+
+func TestResolveAccountProxyURLStrictAllowsWithProxy(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.UpdateRequireProxy(true); err != nil {
+		t.Fatalf("set require-proxy: %v", err)
+	}
+	acc := &config.Account{ID: "a1", ProxyURL: "socks5h://1.2.3.4:1080"}
+	got, err := ResolveAccountProxyURLStrict(acc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "socks5h://1.2.3.4:1080" {
+		t.Fatalf("expected account proxy, got %q", got)
+	}
+}
+
+func TestBuildKiroTransportSetsDialTimeout(t *testing.T) {
+	transport := buildKiroTransport("http://proxy.local:8080")
+	if transport.DialContext == nil {
+		t.Fatalf("expected DialContext to be set for dial timeout")
 	}
 }
 
