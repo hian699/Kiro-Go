@@ -55,6 +55,21 @@ func TestUpdateSettingsPatchCanExplicitlyDisableAPIKey(t *testing.T) {
 	}
 }
 
+func TestRequireProxyRoundTrip(t *testing.T) {
+	if err := Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if GetRequireProxy() {
+		t.Fatalf("expected require-proxy to default off")
+	}
+	if err := UpdateRequireProxy(true); err != nil {
+		t.Fatalf("update require-proxy: %v", err)
+	}
+	if !GetRequireProxy() {
+		t.Fatalf("expected require-proxy to be enabled after update")
+	}
+}
+
 // TestAccountAllowOverageMigration verifies that a config.json from before the
 // upstream-Overages-switch refactor (which carried `allowOverage: true` per
 // account) is migrated into OverageStatus="ENABLED" on first load, and that

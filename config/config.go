@@ -264,6 +264,12 @@ type Config struct {
 	// Leave empty to connect directly.
 	ProxyURL string `json:"proxyURL,omitempty"`
 
+	// RequireProxy, when true, blocks any outbound Kiro request for an account
+	// that has neither a per-account proxy nor a global proxy. The request is
+	// failed (and the account rotated) instead of connecting directly, so the
+	// server's real IP is never exposed. Default false = current behavior.
+	RequireProxy bool `json:"requireProxy,omitempty"`
+
 	// PublicBaseURL is the externally reachable base URL that routes to the SSO
 	// loopback port (e.g. "https://azr.hian.software" → reverse proxy → container:3128).
 	// When set, OAuth redirect_uri values for the Kiro SSO flow are built from it
@@ -325,7 +331,7 @@ type AccountInfo struct {
 }
 
 // Version current version
-const Version = "1.2.5"
+const Version = "1.2.6"
 
 var (
 	cfg     *Config
@@ -993,6 +999,24 @@ func UpdateProxySettings(proxyURL string) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.ProxyURL = proxyURL
+	return Save()
+}
+
+// GetRequireProxy 返回是否强制所有出站请求走代理
+func GetRequireProxy() bool {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return false
+	}
+	return cfg.RequireProxy
+}
+
+// UpdateRequireProxy 设置 require-proxy 开关并持久化
+func UpdateRequireProxy(v bool) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.RequireProxy = v
 	return Save()
 }
 
