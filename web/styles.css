@@ -780,6 +780,128 @@ select.custom-select-native {
   color: #ffffff;
   border-color: #0d9488;
 }
+.proxy-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background: #4338ca;
+  color: #ffffff;
+  line-height: 1.4;
+  vertical-align: middle;
+}
+.proxy-badge-warn {
+  background: #dc2626;
+  color: #ffffff;
+  border-color: #dc2626;
+}
+.applied-proxy-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+.applied-proxy-count {
+  font-size: 0.75rem;
+  color: var(--text-muted, #6b7280);
+}
+.proxy-pool-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+.proxy-pool-row:last-child {
+  border-bottom: none;
+}
+.proxy-pool-actions {
+  margin-inline-start: auto;
+  display: flex;
+  gap: 0.375rem;
+}
+.proxy-health-dot {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 9999px;
+  flex-shrink: 0;
+  background: var(--text-muted, #6b7280);
+}
+.proxy-health-dot.healthy {
+  background: #16a34a;
+}
+.proxy-health-dot.unhealthy {
+  background: #dc2626;
+}
+.proxy-health-dot.disabled {
+  background: #9ca3af;
+}
+.proxy-add-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+.proxy-add-row select {
+  width: auto;
+}
+.proxy-add-row label {
+  font-size: 0.8125rem;
+}
+.proxy-add-row .btn {
+  margin-inline-start: auto;
+}
+.proxy-import-log {
+  max-height: 14rem;
+  overflow-y: auto;
+}
+.proxy-import-summary {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-muted, #6b7280);
+  margin-bottom: 0.375rem;
+}
+.proxy-import-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.125rem 0;
+  line-height: 1.4;
+}
+.proxy-import-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proxy-import-status {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.applied-proxy-summary:empty {
+  display: none;
+}
+.proxy-advanced {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border, #e5e7eb);
+  padding-top: 0.75rem;
+}
+.proxy-advanced > summary {
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-muted, #6b7280);
+  user-select: none;
+}
 
 /* Switches */
 .switch {

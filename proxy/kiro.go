@@ -119,6 +119,137 @@ func ResolveAccountProxyURLStrict(account *config.Account) (string, error) {
 	return url, nil
 }
 
+// proxyRRCounter drives round-robin selection over eligible pooled proxies.
+var proxyRRCounter atomic.Uint64
+
+// proxyPoolEligible reports whether a pooled proxy can be picked now: Healthy ||
+// cooldown elapsed since LastFailAt; and never when DisabledPermanent. now is
+// unix seconds.
+func proxyPoolEligible(p config.PooledProxy, now int64) bool {
+	if p.DisabledPermanent {
+		return false
+	}
+	if p.Healthy {
+		return true
+	}
+	return now-p.LastFailAt >= int64(config.ProxyUnhealthyCooldown.Seconds())
+}
+
+// SelectProxyForAccount returns the proxy URL to use and a poolKey identifying
+// the chosen pool entry (empty when not from the pool), so the caller can report
+// health back. Order: account override → pool (round-robin over eligible) →
+// global proxy → require-proxy error / direct. It reads live pool state via
+// config.GetProxyPool() on every call.
+func SelectProxyForAccount(account *config.Account) (proxyURL string, poolKey string, err error) {
+	if account != nil && account.ProxyURL != "" {
+		return account.ProxyURL, "", nil
+	}
+
+	now := time.Now().Unix()
+	var eligible []config.PooledProxy
+	for _, p := range config.GetProxyPool() {
+		if proxyPoolEligible(p, now) {
+			eligible = append(eligible, p)
+		}
+	}
+	if len(eligible) > 0 {
+		idx := proxyRRCounter.Add(1)
+		pick := eligible[(idx-1)%uint64(len(eligible))]
+		return pick.URL, pick.URL, nil
+	}
+
+	if global := config.GetProxyURL(); global != "" {
+		return global, "", nil
+	}
+	if config.GetRequireProxy() {
+		return "", "", fmt.Errorf("require-proxy: no proxy configured for account")
+	}
+	return "", "", nil
+}
+
+// maxProxySwapAttempts caps how many times a single streaming request rotates to
+// another pool proxy after a proxy/dial transport failure before giving up and
+// letting account-level failover take over. maxRestProxySwapAttempts is the
+// smaller cap for the REST/background path.
+const (
+	maxProxySwapAttempts     = 3
+	maxRestProxySwapAttempts = 2
+)
+
+// shouldSwapProxy decides whether a streaming request should rotate to another
+// pool proxy after a transport failure. It is true only for a genuine
+// proxy/dial transport error (isProxyErrorMessage), when the failing proxy came
+// from the pool (poolKey != "" — account overrides and the global proxy are not
+// pool-managed), and while under the swap cap. A nil error (no transport
+// failure) or an HTTP-status error (e.g. "HTTP 401 ...") returns false so a
+// working proxy is never marked unhealthy for an upstream status.
+func shouldSwapProxy(transportErr error, poolKey string, attempts int) bool {
+	if transportErr == nil {
+		return false
+	}
+	return isProxyErrorMessage(transportErr.Error()) && poolKey != "" && attempts < maxProxySwapAttempts
+}
+
+// doRESTWithProxySwap runs a REST request through a pool-aware proxy with
+// bounded proxy-swap failover. It selects a proxy via SelectProxyForAccount
+// (honoring the require-proxy gate — a require-proxy error is returned as-is so
+// the caller aborts rather than leaking the real IP), issues the request, and
+// on a proxy/dial transport failure marks that pool proxy unhealthy and
+// re-selects another, up to maxRestProxySwapAttempts. When the request reaches
+// upstream through a pool proxy it marks that proxy healthy. HTTP status errors
+// (4xx/5xx) come back as a normal *http.Response and never mark a proxy
+// unhealthy — only transport failures do. buildReq must construct a FRESH
+// *http.Request each call so the body can be re-read across swaps.
+func doRESTWithProxySwap(account *config.Account, buildReq func() (*http.Request, error)) (*http.Response, error) {
+	attempts := 0
+	for {
+		proxyURL, poolKey, err := SelectProxyForAccount(account)
+		if err != nil {
+			return nil, err
+		}
+		req, err := buildReq()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := GetRestClientForProxy(proxyURL).Do(req)
+		if err != nil {
+			if isProxyErrorMessage(err.Error()) && poolKey != "" && attempts < maxRestProxySwapAttempts {
+				config.MarkProxyUnhealthy(poolKey)
+				attempts++
+				logger.Warnf("[Route] REST proxy swap for %s after transport error: %v", accountEmailForLog(account), err)
+				continue
+			}
+			return nil, err
+		}
+		if poolKey != "" {
+			config.MarkProxyHealthy(poolKey)
+		}
+		return resp, nil
+	}
+}
+
+// maskProxyForLog returns a log-safe proxy string: scheme://[user:***@]host:port,
+// or "direct" when no proxy is configured. Password is never logged.
+func maskProxyForLog(proxyURL string) string {
+	if proxyURL == "" {
+		return "direct"
+	}
+	u, err := url.Parse(proxyURL)
+	if err != nil || u.Host == "" {
+		return "direct"
+	}
+	auth := ""
+	if u.User != nil {
+		name := u.User.Username()
+		if _, hasPw := u.User.Password(); hasPw {
+			auth = name + ":***@"
+		} else if name != "" {
+			auth = name + "@"
+		}
+	}
+	return fmt.Sprintf("%s://%s%s", u.Scheme, auth, u.Host)
+}
+
 // buildKiroTransport constructs an HTTP Transport with optional outbound proxy support.
 func buildKiroTransport(proxyURL string) *http.Transport {
 	t := &http.Transport{
@@ -395,6 +526,16 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		callback = &wrapped
 	}
 
+	// Resolve the outbound proxy FIRST. When require-proxy is on and the account
+	// has no proxy, this returns a blocking error so we bail before any network
+	// call below (e.g. ResolveProfileArn), preventing a direct-connection IP leak.
+	// poolKey (non-empty only when the proxy came from the pool) lets us report
+	// health back and rotate to another pool proxy on a transport failure.
+	proxyURL, poolKey, proxyErr := SelectProxyForAccount(account)
+	if proxyErr != nil {
+		return proxyErr
+	}
+
 	if payload != nil && strings.TrimSpace(payload.ProfileArn) == "" {
 		if profileArn, err := ResolveProfileArn(account); err == nil {
 			payload.ProfileArn = profileArn
@@ -408,69 +549,112 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 	// Build endpoint list ordered by configuration.
 	endpoints := getSortedEndpoints(config.GetPreferredEndpoint())
 
+	// OUTER proxy-swap loop: the inner loop tries each endpoint over the current
+	// proxy. Only a proxy/dial TRANSPORT failure (not an HTTP status) rotates us
+	// to another pool proxy — HTTP 4xx/5xx are upstream/account state and must
+	// never mark a proxy unhealthy.
+	proxyAttempts := 0
 	var lastErr error
-	for _, ep := range endpoints {
-		// Update the origin field for the selected endpoint.
-		payload.ConversationState.CurrentMessage.UserInputMessage.Origin = ep.Origin
+	for {
+		logger.Infof("[Route] ac=%s model=%s proxy=%s", accountEmailForLog(account), currentMessageModelID(payload), maskProxyForLog(proxyURL))
+		proxyClient := GetClientForProxy(proxyURL)
 
-		// Target the account's region; endpoint URLs are declared for us-east-1.
-		epURL := regionalizeURL(ep.URL, account)
-		reqBody, _ := json.Marshal(payload)
-		req, err := http.NewRequest("POST", epURL, bytes.NewReader(reqBody))
-		if err != nil {
-			lastErr = err
-			continue
-		}
+		// lastTransportErr captures ONLY proxyClient.Do transport failures for the
+		// current proxy — it drives the swap decision. HTTP-status errors set
+		// lastErr but never lastTransportErr. reachedUpstream records whether any
+		// endpoint got an HTTP response through this proxy: if one did, the proxy
+		// demonstrably works, so a transport error on a different endpoint must not
+		// mark it unhealthy.
+		var lastTransportErr error
+		reachedUpstream := false
+		for _, ep := range endpoints {
+			// Update the origin field for the selected endpoint.
+			payload.ConversationState.CurrentMessage.UserInputMessage.Origin = ep.Origin
 
-		host := ""
-		if parsedURL, parseErr := url.Parse(epURL); parseErr == nil {
-			host = parsedURL.Host
-		}
-		headerValues := buildStreamingHeaderValues(account, host)
-
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "*/*")
-		if ep.AmzTarget != "" {
-			req.Header.Set("X-Amz-Target", ep.AmzTarget)
-		}
-		applyKiroBaseHeaders(req, account, headerValues)
-		if account.AuthMethod == "external_idp" {
-			req.Header.Set("TokenType", "EXTERNAL_IDP")
-		}
-		req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
-		req.Header.Set("x-amzn-codewhisperer-optout", "true")
-		req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
-		req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
-
-		resp, err := GetClientForProxy(ResolveAccountProxyURL(account)).Do(req)
-		if err != nil {
-			lastErr = err
-			logger.Warnf("[KiroAPI] Endpoint %s failed: %v", ep.Name, err)
-			continue
-		}
-
-		if resp.StatusCode == 429 {
-			resp.Body.Close()
-			logger.Warnf("[KiroAPI] Endpoint %s quota exhausted (429), trying next...", ep.Name)
-			lastErr = fmt.Errorf("quota exhausted on %s", ep.Name)
-			continue
-		}
-
-		if resp.StatusCode != 200 {
-			errBody, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			lastErr = fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, ep.Name, string(errBody))
-			// Authentication errors and payment errors are not retried across endpoints.
-			if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 402 {
-				return lastErr
+			// Target the account's region; endpoint URLs are declared for us-east-1.
+			epURL := regionalizeURL(ep.URL, account)
+			reqBody, _ := json.Marshal(payload)
+			req, err := http.NewRequest("POST", epURL, bytes.NewReader(reqBody))
+			if err != nil {
+				lastErr = err
+				continue
 			}
-			logger.Warnf("[KiroAPI] Endpoint %s error: %v", ep.Name, lastErr)
-			continue
+
+			host := ""
+			if parsedURL, parseErr := url.Parse(epURL); parseErr == nil {
+				host = parsedURL.Host
+			}
+			headerValues := buildStreamingHeaderValues(account, host)
+
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "*/*")
+			if ep.AmzTarget != "" {
+				req.Header.Set("X-Amz-Target", ep.AmzTarget)
+			}
+			applyKiroBaseHeaders(req, account, headerValues)
+			if account.AuthMethod == "external_idp" {
+				req.Header.Set("TokenType", "EXTERNAL_IDP")
+			}
+			req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+			req.Header.Set("x-amzn-codewhisperer-optout", "true")
+			req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
+			req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
+
+			resp, err := proxyClient.Do(req)
+			if err != nil {
+				lastErr = err
+				lastTransportErr = err
+				logger.Warnf("[KiroAPI] Endpoint %s failed: %v", ep.Name, err)
+				continue
+			}
+			// Got an HTTP response through this proxy — it reached upstream.
+			reachedUpstream = true
+
+			if resp.StatusCode == 429 {
+				resp.Body.Close()
+				logger.Warnf("[KiroAPI] Endpoint %s quota exhausted (429), trying next...", ep.Name)
+				lastErr = fmt.Errorf("quota exhausted on %s", ep.Name)
+				continue
+			}
+
+			if resp.StatusCode != 200 {
+				errBody, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				lastErr = fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, ep.Name, string(errBody))
+				// Authentication errors and payment errors are not retried across endpoints.
+				if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 402 {
+					return lastErr
+				}
+				logger.Warnf("[KiroAPI] Endpoint %s error: %v", ep.Name, lastErr)
+				continue
+			}
+
+			// Reached upstream and got a streamable 200 through this proxy — it
+			// works, so mark the pool entry healthy once.
+			if poolKey != "" {
+				config.MarkProxyHealthy(poolKey)
+			}
+			err = parseEventStream(resp.Body, callback)
+			resp.Body.Close()
+			return err
 		}
 
-		err = parseEventStream(resp.Body, callback)
-		resp.Body.Close()
-		return err
+		// Inner endpoint loop exhausted. If the failure was a proxy transport
+		// error, no endpoint reached upstream through this proxy, and we can
+		// still swap, mark the current proxy unhealthy and rotate to another
+		// pool proxy. reachedUpstream guards against penalizing a working proxy
+		// when one endpoint transport-failed but another got an HTTP response.
+		if !reachedUpstream && shouldSwapProxy(lastTransportErr, poolKey, proxyAttempts) {
+			config.MarkProxyUnhealthy(poolKey)
+			proxyAttempts++
+			newURL, newKey, selErr := SelectProxyForAccount(account)
+			if selErr != nil {
+				return selErr
+			}
+			proxyURL, poolKey = newURL, newKey
+			continue
+		}
+		break
 	}
 
 	if lastErr != nil {

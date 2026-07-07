@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"kiro-go/config"
 	"net/http"
 	"net/url"
@@ -347,5 +348,177 @@ func TestParseEventStreamSurfacesMidStreamException(t *testing.T) {
 	}
 	if completed {
 		t.Fatal("OnComplete must not fire when the stream ends in an exception")
+	}
+}
+
+func TestSelectProxyOverrideWins(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.AddProxyToPool("http://pool:3128"); err != nil {
+		t.Fatalf("add pool proxy: %v", err)
+	}
+	acc := &config.Account{ID: "a1", ProxyURL: "socks5h://override:1080"}
+	got, poolKey, err := SelectProxyForAccount(acc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "socks5h://override:1080" {
+		t.Fatalf("expected account override, got %q", got)
+	}
+	if poolKey != "" {
+		t.Fatalf("expected empty poolKey for override, got %q", poolKey)
+	}
+}
+
+func TestSelectProxyRoundRobinSkipsIneligible(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	const (
+		unhealthy = "http://unhealthy:3128"
+		disabled  = "http://disabled:3128"
+		healthy   = "http://healthy:3128"
+	)
+	for _, u := range []string{unhealthy, disabled, healthy} {
+		if err := config.AddProxyToPool(u); err != nil {
+			t.Fatalf("add %q: %v", u, err)
+		}
+	}
+	if _, err := config.MarkProxyUnhealthy(unhealthy); err != nil {
+		t.Fatalf("mark unhealthy: %v", err)
+	}
+	if err := config.SetProxyPoolDisabled(disabled, true); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	// The unhealthy entry was just failed, so it is in cooldown and ineligible;
+	// the disabled entry is never eligible. Only the healthy one may be picked.
+	for i := 0; i < 5; i++ {
+		got, poolKey, err := SelectProxyForAccount(&config.Account{ID: "a1"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != healthy {
+			t.Fatalf("iteration %d: expected healthy proxy, got %q", i, got)
+		}
+		if poolKey != healthy {
+			t.Fatalf("iteration %d: expected poolKey==URL, got %q", i, poolKey)
+		}
+	}
+}
+
+func TestSelectProxyCooldownHalfOpen(t *testing.T) {
+	cooldown := int64(config.ProxyUnhealthyCooldown.Seconds())
+	now := time.Now().Unix()
+
+	inCooldown := config.PooledProxy{URL: "http://x:3128", Healthy: false, LastFailAt: now - cooldown + 5}
+	if proxyPoolEligible(inCooldown, now) {
+		t.Fatalf("expected unhealthy entry within cooldown to be ineligible")
+	}
+
+	elapsed := config.PooledProxy{URL: "http://x:3128", Healthy: false, LastFailAt: now - cooldown - 1}
+	if !proxyPoolEligible(elapsed, now) {
+		t.Fatalf("expected unhealthy entry past cooldown to be eligible again")
+	}
+
+	disabled := config.PooledProxy{URL: "http://x:3128", Healthy: true, DisabledPermanent: true}
+	if proxyPoolEligible(disabled, now) {
+		t.Fatalf("expected DisabledPermanent entry to never be eligible")
+	}
+
+	healthy := config.PooledProxy{URL: "http://x:3128", Healthy: true}
+	if !proxyPoolEligible(healthy, now) {
+		t.Fatalf("expected healthy entry to be eligible")
+	}
+}
+
+func TestSelectProxyGlobalFallback(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.UpdateProxySettings("http://global:8080"); err != nil {
+		t.Fatalf("set global proxy: %v", err)
+	}
+	got, poolKey, err := SelectProxyForAccount(&config.Account{ID: "a1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "http://global:8080" {
+		t.Fatalf("expected global proxy, got %q", got)
+	}
+	if poolKey != "" {
+		t.Fatalf("expected empty poolKey for global, got %q", poolKey)
+	}
+}
+
+func TestSelectProxyRequireProxyError(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.UpdateRequireProxy(true); err != nil {
+		t.Fatalf("set require-proxy: %v", err)
+	}
+	_, _, err := SelectProxyForAccount(&config.Account{ID: "a1"})
+	if err == nil {
+		t.Fatalf("expected error when require-proxy on and no proxy configured")
+	}
+	if !strings.Contains(err.Error(), "require-proxy") {
+		t.Fatalf("error should contain marker, got: %v", err)
+	}
+}
+
+func TestSelectProxyDirect(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	got, poolKey, err := SelectProxyForAccount(&config.Account{ID: "a1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" || poolKey != "" {
+		t.Fatalf("expected direct (empty, empty), got (%q, %q)", got, poolKey)
+	}
+}
+
+func TestShouldSwapProxy(t *testing.T) {
+	proxyErr := fmt.Errorf("proxyconnect tcp: dial tcp 1.2.3.4:3128: connect: connection refused")
+	httpErr := fmt.Errorf("HTTP 401 from Kiro IDE: unauthorized")
+
+	// proxy transport error + pool key + under cap → swap.
+	if !shouldSwapProxy(proxyErr, "http://pool:3128", 0) {
+		t.Fatal("expected swap for proxy error with poolKey under cap")
+	}
+	// nil error (no transport failure) → never swap.
+	if shouldSwapProxy(nil, "http://pool:3128", 0) {
+		t.Fatal("expected no swap for nil error")
+	}
+	// non-proxy transport error → never swap.
+	if shouldSwapProxy(fmt.Errorf("some other error"), "http://pool:3128", 0) {
+		t.Fatal("expected no swap for non-proxy error")
+	}
+	// HTTP-status error string → never swap (a working proxy must not be marked unhealthy).
+	if shouldSwapProxy(httpErr, "http://pool:3128", 0) {
+		t.Fatal("expected no swap for HTTP-status error")
+	}
+	// empty poolKey (override / global / direct) → never swap.
+	if shouldSwapProxy(proxyErr, "", 0) {
+		t.Fatal("expected no swap for empty poolKey")
+	}
+	// at cap → stop swapping.
+	if shouldSwapProxy(proxyErr, "http://pool:3128", maxProxySwapAttempts) {
+		t.Fatal("expected no swap once attempts reach the cap")
+	}
+}
+
+func TestMaskProxyForLog(t *testing.T) {
+	cases := map[string]string{
+		"":                                "direct",
+		"socks5h://1.2.3.4:1080":          "socks5h://1.2.3.4:1080",
+		"http://user:secret@1.2.3.4:8080": "http://user:***@1.2.3.4:8080",
+	}
+	for in, want := range cases {
+		if got := maskProxyForLog(in); got != want {
+			t.Fatalf("maskProxyForLog(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

@@ -46,6 +46,24 @@ func isAuthErrorMessage(msg string) bool {
 		strings.Contains(msg, "refresh token expired")
 }
 
+// isProxyErrorMessage matches outbound-proxy / dial failures: a missing required
+// proxy (require-proxy), a dead or refusing proxy, or a connect timeout on the
+// proxy hop. These are infrastructure failures, not account bans — the account
+// is cooled down and the request rotates to the next account. NOTE: keep this
+// case ABOVE isAuthErrorMessage in handleAccountFailure so a proxy connect
+// failure is never misread as an auth ban and disable the account.
+func isProxyErrorMessage(msg string) bool {
+	msg = strings.ToLower(msg)
+	return strings.Contains(msg, "require-proxy") ||
+		strings.Contains(msg, "proxyconnect") ||
+		strings.Contains(msg, "socks") ||
+		strings.Contains(msg, "connection refused") ||
+		(strings.Contains(msg, "dial tcp") && (strings.Contains(msg, "timeout") ||
+			strings.Contains(msg, "refused") ||
+			strings.Contains(msg, "connectex") ||
+			strings.Contains(msg, "no such host")))
+}
+
 // statusForUpstreamError maps an upstream error to the HTTP status the client should see.
 // Quota/throttle → 429, overage → 402, auth → 401, everything else → 500.
 func statusForUpstreamError(err error) int {
@@ -151,6 +169,11 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 
 	errMsg := err.Error()
 	switch {
+	case isProxyErrorMessage(errMsg):
+		// Proxy/dial failure — cool down and rotate; never disable the account
+		// and never fall through to a direct connection.
+		logger.Warnf("[AccountFailover] Proxy/dial failure for %s: %v", account.Email, err)
+		h.pool.RecordError(account.ID, false)
 	case isOverageErrorMessage(errMsg):
 		h.disableAccountOverage(account)
 		h.pool.RecordError(account.ID, false)

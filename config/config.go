@@ -270,6 +270,11 @@ type Config struct {
 	// server's real IP is never exposed. Default false = current behavior.
 	RequireProxy bool `json:"requireProxy,omitempty"`
 
+	// ProxyPool is a shared pool of outbound proxies with persisted health.
+	// Proxy-level failover picks a healthy proxy; entries that fail are marked
+	// unhealthy and skipped for ProxyUnhealthyCooldown before being retried.
+	ProxyPool []PooledProxy `json:"proxyPool,omitempty"`
+
 	// PublicBaseURL is the externally reachable base URL that routes to the SSO
 	// loopback port (e.g. "https://azr.hian.software" → reverse proxy → container:3128).
 	// When set, OAuth redirect_uri values for the Kiro SSO flow are built from it
@@ -310,6 +315,21 @@ type Config struct {
 	TotalCredits    float64 `json:"totalCredits,omitempty"`    // Total credits consumed
 }
 
+// PooledProxy is one outbound proxy in the shared pool, carrying persisted
+// health so proxy-level failover survives restarts. 池化代理，带持久化健康状态。
+type PooledProxy struct {
+	URL               string `json:"url"`
+	Healthy           bool   `json:"healthy"`
+	FailCount         int    `json:"failCount,omitempty"`
+	LastFailAt        int64  `json:"lastFailAt,omitempty"`
+	LastOKAt          int64  `json:"lastOkAt,omitempty"`
+	DisabledPermanent bool   `json:"disabledPermanent,omitempty"`
+}
+
+// ProxyUnhealthyCooldown is how long an unhealthy pooled proxy is skipped by
+// the selector (in proxy/) before it is retried. 不健康代理的冷却时间。
+const ProxyUnhealthyCooldown = 5 * time.Minute
+
 // AccountInfo contains account metadata retrieved from Kiro API.
 // Used for updating subscription and usage information.
 type AccountInfo struct {
@@ -331,7 +351,7 @@ type AccountInfo struct {
 }
 
 // Version current version
-const Version = "1.2.6"
+const Version = "1.2.7"
 
 var (
 	cfg     *Config
@@ -1018,6 +1038,120 @@ func UpdateRequireProxy(v bool) error {
 	defer cfgLock.Unlock()
 	cfg.RequireProxy = v
 	return Save()
+}
+
+// GetProxyPool 返回共享代理池的副本，调用方不得修改内部状态。
+func GetProxyPool() []PooledProxy {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return nil
+	}
+	pool := make([]PooledProxy, len(cfg.ProxyPool))
+	copy(pool, cfg.ProxyPool)
+	return pool
+}
+
+// AddProxyToPool 按 URL 去重加入代理池；已存在则视为成功的空操作。
+// 新条目 Healthy=true 且 LastOKAt=now。
+func AddProxyToPool(url string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	for _, p := range cfg.ProxyPool {
+		if p.URL == url {
+			return nil
+		}
+	}
+	cfg.ProxyPool = append(cfg.ProxyPool, PooledProxy{
+		URL:      url,
+		Healthy:  true,
+		LastOKAt: time.Now().Unix(),
+	})
+	return Save()
+}
+
+// RemoveProxyFromPool 从代理池移除指定 URL；不存在则空操作。
+func RemoveProxyFromPool(url string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	for i, p := range cfg.ProxyPool {
+		if p.URL == url {
+			cfg.ProxyPool = append(cfg.ProxyPool[:i], cfg.ProxyPool[i+1:]...)
+			return Save()
+		}
+	}
+	return nil
+}
+
+// MarkProxyUnhealthy 记录一次失败：FailCount++、LastFailAt=now、Healthy=false。
+// FailCount 每次都在内存中自增，但仅在 healthy->unhealthy 的状态跳变时返回
+// changed=true 并持久化，避免失败风暴引发写入风暴。
+func MarkProxyUnhealthy(url string) (changed bool, err error) {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	for i := range cfg.ProxyPool {
+		if cfg.ProxyPool[i].URL != url {
+			continue
+		}
+		wasHealthy := cfg.ProxyPool[i].Healthy
+		cfg.ProxyPool[i].FailCount++
+		cfg.ProxyPool[i].LastFailAt = time.Now().Unix()
+		cfg.ProxyPool[i].Healthy = false
+		if wasHealthy {
+			return true, Save()
+		}
+		return false, nil
+	}
+	return false, nil
+}
+
+// MarkProxyHealthy 记录恢复：重置 FailCount、Healthy=true、LastOKAt=now。
+// 仅在 unhealthy->healthy 跳变时返回 changed=true 并持久化。
+func MarkProxyHealthy(url string) (changed bool, err error) {
+	// Fast path: a proxy that is already healthy with no accumulated failures
+	// needs no write. Every successful pooled request calls this, so an RLock
+	// here keeps the high-QPS success path from serializing on the write lock.
+	cfgLock.RLock()
+	for i := range cfg.ProxyPool {
+		if cfg.ProxyPool[i].URL == url {
+			if cfg.ProxyPool[i].Healthy && cfg.ProxyPool[i].FailCount == 0 {
+				cfgLock.RUnlock()
+				return false, nil
+			}
+			break
+		}
+	}
+	cfgLock.RUnlock()
+
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	for i := range cfg.ProxyPool {
+		if cfg.ProxyPool[i].URL != url {
+			continue
+		}
+		wasHealthy := cfg.ProxyPool[i].Healthy
+		cfg.ProxyPool[i].FailCount = 0
+		cfg.ProxyPool[i].Healthy = true
+		cfg.ProxyPool[i].LastOKAt = time.Now().Unix()
+		if !wasHealthy {
+			return true, Save()
+		}
+		return false, nil
+	}
+	return false, nil
+}
+
+// SetProxyPoolDisabled 永久禁用/启用某个池化代理并持久化。
+func SetProxyPoolDisabled(url string, disabled bool) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	for i := range cfg.ProxyPool {
+		if cfg.ProxyPool[i].URL == url {
+			cfg.ProxyPool[i].DisabledPermanent = disabled
+			return Save()
+		}
+	}
+	return nil
 }
 
 // GetAllowOverUsage returns whether over-usage is allowed when account quota is exhausted.

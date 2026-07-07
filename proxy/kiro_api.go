@@ -138,17 +138,17 @@ func GetUsageLimits(account *config.Account) (*UsageLimitsResponse, error) {
 	url = regionalizeURL(url, account)
 	url = withProfileArnQuery(url, account)
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	setKiroHeaders(req, account)
-	if account.AuthMethod == "external_idp" {
-		req.Header.Set("TokenType", "EXTERNAL_IDP")
-	}
-
-	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	resp, err := doRESTWithProxySwap(account, func() (*http.Request, error) {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		setKiroHeaders(req, account)
+		if account.AuthMethod == "external_idp" {
+			req.Header.Set("TokenType", "EXTERNAL_IDP")
+		}
+		return req, nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -171,15 +171,15 @@ func GetUserInfo(account *config.Account) (*UserInfoResponse, error) {
 	url := regionalizeURL(fmt.Sprintf("%s/GetUserInfo", kiroRestAPIBase), account)
 
 	payload := `{"origin":"KIRO_IDE"}`
-	req, err := http.NewRequest("POST", url, strings.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-
-	setKiroHeaders(req, account)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	resp, err := doRESTWithProxySwap(account, func() (*http.Request, error) {
+		req, err := http.NewRequest("POST", url, strings.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		setKiroHeaders(req, account)
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -207,17 +207,17 @@ func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 	url = regionalizeURL(url, account)
 	url = withProfileArnQuery(url, account)
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	setKiroHeaders(req, account)
-	if account.AuthMethod == "external_idp" {
-		req.Header.Set("TokenType", "EXTERNAL_IDP")
-	}
-
-	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	resp, err := doRESTWithProxySwap(account, func() (*http.Request, error) {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		setKiroHeaders(req, account)
+		if account.AuthMethod == "external_idp" {
+			req.Header.Set("TokenType", "EXTERNAL_IDP")
+		}
+		return req, nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -450,17 +450,18 @@ func isTransientProfileFetchError(err error) bool {
 
 func listAvailableProfiles(account *config.Account, region string) (string, error) {
 	url := regionalizeURLForRegion(fmt.Sprintf("%s/ListAvailableProfiles", kiroRestAPIBase), region)
-	req, err := http.NewRequest("POST", url, strings.NewReader(`{"maxResults":10}`))
-	if err != nil {
-		return "", err
-	}
-	setKiroHeaders(req, account)
-	req.Header.Set("Content-Type", "application/json")
-	if account.AuthMethod == "external_idp" {
-		req.Header.Set("TokenType", "EXTERNAL_IDP")
-	}
-
-	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	resp, err := doRESTWithProxySwap(account, func() (*http.Request, error) {
+		req, err := http.NewRequest("POST", url, strings.NewReader(`{"maxResults":10}`))
+		if err != nil {
+			return nil, err
+		}
+		setKiroHeaders(req, account)
+		req.Header.Set("Content-Type", "application/json")
+		if account.AuthMethod == "external_idp" {
+			req.Header.Set("TokenType", "EXTERNAL_IDP")
+		}
+		return req, nil
+	})
 	if err != nil {
 		return "", err
 	}

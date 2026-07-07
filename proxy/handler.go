@@ -854,6 +854,16 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	}
 }
 
+// logSuspiciousReq warns when a request burned a large input context but the
+// model produced almost nothing and ended its turn without calling a tool —
+// typically a thin client prompt (e.g. "continue") over a huge history, where
+// the model just acks intent and stops. These waste quota, so surface them.
+func logSuspiciousReq(api, model string, inputTokens, outputTokens int, hasTool bool) {
+	if inputTokens > 50_000 && outputTokens < 50 && !hasTool {
+		logger.Warnf("[SuspiciousReq] high-input low-output api=%s model=%s in=%d out=%d — thin prompt over large context; model acked and ended turn", api, model, inputTokens, outputTokens)
+	}
+}
+
 // handleClaudeStream Claude 流式响应
 func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -1267,6 +1277,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
+		logSuspiciousReq("claude", model, inputTokens, outputTokens, len(toolUses) > 0)
 
 		stopReason := "end_turn"
 		if len(toolUses) > 0 {
@@ -1517,6 +1528,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
+		logSuspiciousReq("claude", model, inputTokens, outputTokens, len(toolUses) > 0)
 
 		responseThinkingContent := rawThinkingContent
 		includeEmptyThinkingBlock := thinking && thinkingOpts.OmitDisplay && rawThinkingContent != ""
@@ -1966,6 +1978,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model, account, "openai", startedAt)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
+		logSuspiciousReq("openai", model, inputTokens, outputTokens, len(toolCalls) > 0)
 
 		finishReason := "stop"
 		if len(toolCalls) > 0 {
@@ -2072,6 +2085,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model, account, "openai", startedAt)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
+		logSuspiciousReq("openai", model, inputTokens, outputTokens, len(toolUses) > 0)
 
 		thinkingFormat := config.GetThinkingConfig().OpenAIFormat
 		resp := KiroToOpenAIResponseWithReasoning(finalContent, reasoningContent, toolUses, inputTokens, outputTokens, model, thinkingFormat)
@@ -2272,6 +2286,14 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiUpdateProxy(w, r)
 	case path == "/proxy/import" && r.Method == "POST":
 		h.apiImportProxies(w, r)
+	case path == "/proxy/pool" && r.Method == "GET":
+		h.apiGetProxyPool(w, r)
+	case path == "/proxy/pool" && r.Method == "POST":
+		h.apiAddProxyPool(w, r)
+	case path == "/proxy/pool" && r.Method == "DELETE":
+		h.apiRemoveProxyPool(w, r)
+	case path == "/proxy/pool/toggle" && r.Method == "POST":
+		h.apiToggleProxyPool(w, r)
 	case path == "/prompt-filter" && r.Method == "GET":
 		h.apiGetPromptFilter(w, r)
 	case path == "/prompt-filter" && r.Method == "POST":
@@ -4121,15 +4143,17 @@ func applyProxyConfig(proxyURL string) {
 
 // apiGetProxy 获取当前代理配置
 func (h *Handler) apiGetProxy(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(map[string]string{
-		"proxyURL": config.GetProxyURL(),
+	json.NewEncoder(w).Encode(map[string]any{
+		"proxyURL":     config.GetProxyURL(),
+		"requireProxy": config.GetRequireProxy(),
 	})
 }
 
 // apiUpdateProxy 更新代理配置并立即生效
 func (h *Handler) apiUpdateProxy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ProxyURL string `json:"proxyURL"`
+		ProxyURL     string `json:"proxyURL"`
+		RequireProxy *bool  `json:"requireProxy"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -4158,6 +4182,134 @@ func (h *Handler) apiUpdateProxy(w http.ResponseWriter, r *http.Request) {
 	// 立即应用新的代理配置
 	applyProxyConfig(req.ProxyURL)
 
+	if req.RequireProxy != nil {
+		if err := config.UpdateRequireProxy(*req.RequireProxy); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+// validProxyScheme 校验代理 URL 前缀，与 apiUpdateProxy 保持一致。
+func validProxyScheme(u string) bool {
+	return strings.HasPrefix(u, "http://") ||
+		strings.HasPrefix(u, "https://") ||
+		strings.HasPrefix(u, "socks5://") ||
+		strings.HasPrefix(u, "socks5h://")
+}
+
+// apiGetProxyPool 返回共享代理池（含完整 URL，客户端负责展示脱敏）
+func (h *Handler) apiGetProxyPool(w http.ResponseWriter, r *http.Request) {
+	pool := config.GetProxyPool()
+	entries := make([]map[string]any, 0, len(pool))
+	for _, p := range pool {
+		entries = append(entries, map[string]any{
+			"url":               p.URL,
+			"healthy":           p.Healthy,
+			"failCount":         p.FailCount,
+			"lastFailAt":        p.LastFailAt,
+			"lastOkAt":          p.LastOKAt,
+			"disabledPermanent": p.DisabledPermanent,
+		})
+	}
+	json.NewEncoder(w).Encode(map[string]any{"pool": entries})
+}
+
+// apiAddProxyPool 向代理池批量添加，接受 {url} 或 {urls:[...]}
+func (h *Handler) apiAddProxyPool(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL  string   `json:"url"`
+		URLs []string `json:"urls"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+
+	urls := req.URLs
+	if req.URL != "" {
+		urls = append(urls, req.URL)
+	}
+	if len(urls) == 0 {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "url or urls required"})
+		return
+	}
+
+	existing := make(map[string]bool)
+	for _, p := range config.GetProxyPool() {
+		existing[p.URL] = true
+	}
+
+	added, skipped := 0, 0
+	for _, u := range urls {
+		if !validProxyScheme(u) || existing[u] {
+			skipped++
+			continue
+		}
+		if err := config.AddProxyToPool(u); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		existing[u] = true
+		added++
+	}
+	json.NewEncoder(w).Encode(map[string]int{
+		"added":   added,
+		"skipped": skipped,
+		"total":   len(config.GetProxyPool()),
+	})
+}
+
+// apiRemoveProxyPool 从代理池移除指定 URL
+func (h *Handler) apiRemoveProxyPool(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	if req.URL == "" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "url required"})
+		return
+	}
+	if err := config.RemoveProxyFromPool(req.URL); err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+// apiToggleProxyPool 永久禁用/启用某个池化代理
+func (h *Handler) apiToggleProxyPool(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL      string `json:"url"`
+		Disabled bool   `json:"disabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	if req.URL == "" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "url required"})
+		return
+	}
+	if err := config.SetProxyPoolDisabled(req.URL, req.Disabled); err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 

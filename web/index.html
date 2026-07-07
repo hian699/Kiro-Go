@@ -362,7 +362,7 @@
           <button class="btn btn-primary" id="changePasswordBtn" data-i18n="settings.changePassword"></button>
         </div>
 
-        <!-- Outbound proxy -->
+        <!-- Proxy (pool + import + fallback, merged) -->
         <div class="card">
           <div class="card-header"><span class="card-title" data-i18n="settings.proxySettings"></span></div>
           <div class="form-group">
@@ -372,57 +372,70 @@
             <button class="btn btn-primary btn-sm" id="savePublicBaseURLBtn" style="margin-top:0.5rem;"
               data-i18n="settings.savePublicBaseURL"></button>
           </div>
-          <div class="form-group">
-            <label data-i18n="settings.proxyType"></label>
-            <select id="proxyType">
-              <option value="none" data-i18n="settings.proxyNone"></option>
-              <option value="socks5" data-i18n="settings.proxySocks5"></option>
-              <option value="http" data-i18n="settings.proxyHttp"></option>
-            </select>
-          </div>
-          <div id="proxyFields" class="hidden">
-            <div class="form-group">
-              <label data-i18n="settings.proxyHost"></label>
-              <div class="input-row">
-                <input type="text" id="proxyHost" placeholder="127.0.0.1" />
-                <input type="number" id="proxyPort" class="w-24!" placeholder="1080" min="1" max="65535" />
-              </div>
-            </div>
-            <div class="form-group">
-              <label data-i18n="settings.proxyAuth"></label>
-              <div class="input-row">
-                <input type="text" id="proxyUsername" data-i18n-placeholder="settings.proxyUsername"
-                  autocomplete="off" />
-                <input type="password" id="proxyPassword" data-i18n-placeholder="settings.proxyPassword"
-                  autocomplete="new-password" />
-              </div>
-            </div>
-          </div>
-          <button class="btn btn-primary" id="saveProxyBtn" data-i18n="settings.saveProxy"></button>
-        </div>
 
-        <!-- Import proxies (bulk, round-robin assign to accounts) -->
-        <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="proxyImport.title"></span></div>
-          <p class="help-block" data-i18n="proxyImport.desc"></p>
+          <label class="flex items-center gap-2" style="margin-top:0.25rem;">
+            <input type="checkbox" id="requireProxyToggle" />
+            <span data-i18n="settings.requireProxy"></span>
+          </label>
+          <p class="help-block" data-i18n="settings.requireProxyHint"></p>
+
+          <!-- Pool: add/import + list -->
+          <label class="font-semibold pb-2 block" data-i18n="settings.proxyPool"></label>
           <div class="form-group">
-            <label data-i18n="proxyImport.listLabel"></label>
-            <textarea id="proxyImportList" class="font-mono" rows="6"
+            <textarea id="proxyImportList" class="font-mono" rows="4"
               data-i18n-placeholder="proxyImport.listPlaceholder"></textarea>
             <p class="help-block" data-i18n="proxyImport.formatHint"></p>
+            <div class="proxy-add-row">
+              <select id="proxyImportTarget">
+                <option value="pool" data-i18n="proxyImport.targetPool"></option>
+                <option value="accounts" data-i18n="proxyImport.targetAccounts"></option>
+              </select>
+              <label class="flex items-center gap-2">
+                <input type="checkbox" id="proxyImportAutoTest" checked />
+                <span data-i18n="proxyImport.autoTest"></span>
+              </label>
+              <label class="flex items-center gap-2">
+                <input type="checkbox" id="proxyImportDryRun" />
+                <span data-i18n="proxyImport.dryRun"></span>
+              </label>
+              <button class="btn btn-primary btn-sm" id="proxyImportBtn" data-i18n="proxyImport.import"></button>
+            </div>
           </div>
-          <div class="form-group">
-            <label class="flex items-center gap-2">
-              <input type="checkbox" id="proxyImportAutoTest" checked />
-              <span data-i18n="proxyImport.autoTest"></span>
-            </label>
-            <label class="flex items-center gap-2">
-              <input type="checkbox" id="proxyImportDryRun" />
-              <span data-i18n="proxyImport.dryRun"></span>
-            </label>
-          </div>
-          <button class="btn btn-primary" id="proxyImportBtn" data-i18n="proxyImport.import"></button>
-          <div id="proxyImportResults" class="mt-3"></div>
+          <div id="proxyImportResults" class="proxy-import-log mt-3"></div>
+          <div id="proxyPoolList" class="mt-3"></div>
+          <div id="appliedProxyList" class="applied-proxy-summary mt-3"></div>
+
+          <!-- Fallback single proxy (advanced) -->
+          <details class="proxy-advanced">
+            <summary data-i18n="settings.proxyFallbackAdvanced"></summary>
+            <div class="form-group" style="margin-top:0.75rem;">
+              <label data-i18n="settings.proxyType"></label>
+              <select id="proxyType">
+                <option value="none" data-i18n="settings.proxyNone"></option>
+                <option value="socks5" data-i18n="settings.proxySocks5"></option>
+                <option value="http" data-i18n="settings.proxyHttp"></option>
+              </select>
+            </div>
+            <div id="proxyFields" class="hidden">
+              <div class="form-group">
+                <label data-i18n="settings.proxyHost"></label>
+                <div class="input-row">
+                  <input type="text" id="proxyHost" placeholder="127.0.0.1" />
+                  <input type="number" id="proxyPort" class="w-24!" placeholder="1080" min="1" max="65535" />
+                </div>
+              </div>
+              <div class="form-group">
+                <label data-i18n="settings.proxyAuth"></label>
+                <div class="input-row">
+                  <input type="text" id="proxyUsername" data-i18n-placeholder="settings.proxyUsername"
+                    autocomplete="off" />
+                  <input type="password" id="proxyPassword" data-i18n-placeholder="settings.proxyPassword"
+                    autocomplete="new-password" />
+                </div>
+              </div>
+            </div>
+            <button class="btn btn-primary btn-sm" id="saveProxyBtn" data-i18n="settings.saveProxy"></button>
+          </details>
         </div>
 
         <!-- Prompt filter -->

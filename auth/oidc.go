@@ -28,6 +28,13 @@ func RefreshToken(account *config.Account) (string, string, int64, string, error
 	if proxyURL == "" {
 		proxyURL = config.GetProxyURL()
 	}
+	// When require-proxy is on and no proxy is configured, refuse the refresh
+	// rather than connecting directly — a direct refresh POST would leak the
+	// server's real IP before CallKiroAPI's gate can fire. The error string
+	// carries "require-proxy" so the failover classifier cools down + rotates.
+	if proxyURL == "" && config.GetRequireProxy() {
+		return "", "", 0, "", fmt.Errorf("require-proxy: no proxy configured for account")
+	}
 	client := GetAuthClientForProxy(proxyURL)
 
 	if account.AuthMethod == "social" {

@@ -46,6 +46,15 @@
   function escapeAttr(s) {
     return escapeHtml(s).replace(/"/g, '&quot;');
   }
+  function maskProxyForDisplay(raw) {
+    if (!raw) return '';
+    try {
+      const u = new URL(raw);
+      return `${u.protocol}//${u.host}`;
+    } catch (e) {
+      return '';
+    }
+  }
   async function copyText(input) {
     const isPromise = input && typeof input.then === 'function';
     if (isPromise && typeof ClipboardItem !== 'undefined' && navigator.clipboard && navigator.clipboard.write) {
@@ -164,7 +173,7 @@
   function renderCustomSelectOptions(select) {
     const wrap = select && select.__customSelect;
     if (!wrap) return;
-    const content = wrap.querySelector('.custom-select-content');
+    const content = wrap.__content;
     const trigger = wrap.querySelector('.custom-select-trigger');
     if (!content) return;
     if (trigger) labelCustomSelect(select, trigger, content, select.id);
@@ -185,7 +194,7 @@
     const wrap = select && select.__customSelect;
     if (!wrap || !wrap.classList.contains('is-open')) return;
     const trigger = wrap.querySelector('.custom-select-trigger');
-    const content = wrap.querySelector('.custom-select-content');
+    const content = wrap.__content;
     if (!trigger || !content) return;
     const rect = trigger.getBoundingClientRect();
     const gap = 4;
@@ -204,7 +213,7 @@
     const wrap = select && select.__customSelect;
     if (!wrap) return;
     const trigger = wrap.querySelector('.custom-select-trigger');
-    const content = wrap.querySelector('.custom-select-content');
+    const content = wrap.__content;
     if (!trigger || !content) return;
     if (open && !select.disabled) {
       closeAllCustomSelects(select);
@@ -295,7 +304,8 @@
     labelCustomSelect(select, trigger, content, id);
 
     wrap.appendChild(trigger);
-    wrap.appendChild(content);
+    document.body.appendChild(content);
+    wrap.__content = content;
     select.insertAdjacentElement('afterend', wrap);
     select.classList.add('custom-select-native');
     select.setAttribute('aria-hidden', 'true');
@@ -693,6 +703,7 @@
     const res = await api('/accounts');
     accountsData = await res.json();
     renderAccounts();
+    renderAppliedProxies();
   }
 
   // Account list
@@ -823,6 +834,32 @@
     });
   }
 
+  function renderAppliedProxies() {
+    const box = $('appliedProxyList');
+    if (!box) return;
+    const globalMasked = maskProxyForDisplay(window.__globalProxyURL);
+    const groups = new Map();
+    for (const a of accountsData) {
+      const key = maskProxyForDisplay(a.proxyURL) || (globalMasked ? globalMasked + '|global' : '|none');
+      if (!groups.has(key)) groups.set(key, 0);
+      groups.set(key, groups.get(key) + 1);
+    }
+    if (groups.size === 0) {
+      box.innerHTML = '<p class="help-block">' + escapeHtml(t('proxyApplied.empty')) + '</p>';
+      return;
+    }
+    const entries = [...groups.entries()].sort((x, y) => y[1] - x[1]);
+    box.innerHTML = entries.map(([key, count]) => {
+      let label, cls = 'proxy-badge';
+      if (key === '|none') { label = t('account.proxyBadgeNone'); if (window.__requireProxy) cls += ' proxy-badge-warn'; }
+      else if (key.endsWith('|global')) { label = key.slice(0, -('|global'.length)) + ' (' + t('account.proxyBadgeGlobal') + ')'; }
+      else { label = key; }
+      return '<div class="applied-proxy-row">' +
+        '<span class="' + cls + '" title="' + escapeAttr(label) + '">' + escapeHtml(label) + '</span>' +
+        '<span class="applied-proxy-count">' + escapeHtml(t('proxyApplied.accountCount', count)) + '</span>' +
+        '</div>';
+    }).join('');
+  }
   function renderAccounts() {
     const container = $('accountsList');
     if (!container) return;
@@ -840,6 +877,17 @@
       const weight = a.weight || 0;
       const weightBadge = weight >= 2 ? '<span class="badge badge-warning">' + escapeHtml(t('accounts.weightShort')) + ':' + weight + '</span>' : '';
       const overageBadge = renderOverageBadge(a);
+      let proxyBadge = '';
+      const maskedProxy = maskProxyForDisplay(a.proxyURL);
+      if (maskedProxy) {
+        proxyBadge = '<span class="proxy-badge" title="' + escapeAttr(maskedProxy) + '">' + escapeHtml(maskedProxy) + '</span>';
+      } else if (window.__globalProxyURL) {
+        proxyBadge = '<span class="proxy-badge">' + escapeHtml(t('account.proxyBadgeGlobal')) + '</span>';
+      } else if (window.__requireProxy) {
+        proxyBadge = '<span class="proxy-badge proxy-badge-warn">' + escapeHtml(t('account.proxyBadgeNone')) + '</span>';
+      } else {
+        proxyBadge = '<span class="proxy-badge">' + escapeHtml(t('account.proxyBadgeDirect')) + '</span>';
+      }
       const banned = a.banStatus && a.banStatus !== 'ACTIVE';
       const idAttr = escapeAttr(a.id);
       const displayEmail = getDisplayEmail(a.email, a.id);
@@ -861,6 +909,7 @@
         getTrialBadge(a) +
         weightBadge +
         overageBadge +
+        proxyBadge +
         '<span class="badge badge-info">' + escapeHtml(formatAuthMethod(a.provider || a.authMethod)) + '</span>' +
         getStatusBadge(a) +
         '</div>' +
@@ -1436,7 +1485,7 @@
     $('allowOverUsage').checked = d.allowOverUsage || false;
     $('maxPayloadBytes').value = String(d.maxPayloadBytes || 2000000);
     if ($('publicBaseURL')) $('publicBaseURL').value = d.publicBaseURL || '';
-    await Promise.all([loadThinkingConfig(), loadEndpointConfig(), loadProxyConfig(), loadPromptFilter(), loadApiKeys()]);
+    await Promise.all([loadThinkingConfig(), loadEndpointConfig(), loadProxyConfig(), loadProxyPool(), loadPromptFilter(), loadApiKeys()]);
     refreshCustomSelects();
   }
   async function loadThinkingConfig() {
@@ -1478,6 +1527,12 @@
   async function loadProxyConfig() {
     const res = await api('/proxy');
     const d = await res.json();
+    const requireProxyEl = document.getElementById('requireProxyToggle');
+    if (requireProxyEl) requireProxyEl.checked = !!d.requireProxy;
+    window.__requireProxy = !!d.requireProxy;
+    window.__globalProxyURL = d.proxyURL || '';
+    renderAppliedProxies();
+    renderAccounts();
     const url = d.proxyURL || '';
     if (!url) {
       $('proxyType').value = 'none';
@@ -1514,7 +1569,9 @@
       const auth = u ? (p ? encodeURIComponent(u) + ':' + encodeURIComponent(p) + '@' : encodeURIComponent(u) + '@') : '';
       url = type + '://' + auth + host + ':' + port;
     }
-    const res = await api('/proxy', { method: 'POST', body: JSON.stringify({ proxyURL: url }) });
+    const requireProxyEl = document.getElementById('requireProxyToggle');
+    window.__requireProxy = requireProxyEl ? requireProxyEl.checked : false;
+    const res = await api('/proxy', { method: 'POST', body: JSON.stringify({ proxyURL: url, requireProxy: requireProxyEl ? requireProxyEl.checked : false }) });
     const d = await res.json();
     if (d.success) toast(t('settings.proxySaved'), 'success');
     else toast(t('common.saveFailed') + ': ' + (d.error || ''), 'error');
@@ -1535,13 +1592,14 @@
     if (!raw) { toast(t('proxyImport.listRequired'), 'warning'); return; }
     const autoTest = $('proxyImportAutoTest').checked;
     const dryRun = $('proxyImportDryRun').checked;
+    const target = $('proxyImportTarget').value;
     const btn = $('proxyImportBtn');
     btn.disabled = true;
     const dismiss = toast(t('proxyImport.processing'), 'info', { duration: 0 });
     try {
       const res = await api('/proxy/import', {
         method: 'POST',
-        body: JSON.stringify({ proxies: raw, autoTest, dryRun })
+        body: JSON.stringify({ proxies: raw, autoTest, dryRun, target })
       });
       const d = await res.json();
       dismiss();
@@ -1551,6 +1609,7 @@
       }
       renderProxyImportResults(d);
       toast(t('proxyImport.summary', d.assigned || 0, d.reachable || 0, d.total || 0), d.reachable < d.total ? 'warning' : 'success');
+      if (target === 'pool') loadProxyPool();
       loadAccounts();
     } catch (e) {
       dismiss();
@@ -1561,7 +1620,16 @@
   }
   function renderProxyImportResults(d) {
     const box = $('proxyImportResults');
-    const rows = (d.results || []).map(r => {
+    const results = d.results || [];
+    if (!results.length) {
+      box.innerHTML = '<p class="help-block">' + escapeHtml(t('proxyImport.noResults')) + '</p>';
+      return;
+    }
+    const ok = results.filter(r => !r.error && !(r.tested && !r.testPassed)).length;
+    const summary = '<div class="proxy-import-summary">' +
+      escapeHtml(t('proxyImport.summary', d.assigned || 0, d.reachable || 0, d.total || 0)) +
+      ' · ' + escapeHtml(t('proxyImport.okCount', ok, results.length)) + '</div>';
+    const rows = results.map(r => {
       let status, cls;
       if (r.error) { status = '✗ ' + r.error; cls = 'error-text'; }
       else if (r.tested && !r.testPassed) { status = '⚠ ' + t('proxyImport.testFailed'); cls = 'warning-text'; }
@@ -1572,10 +1640,69 @@
       const target = r.assignedEmail ? ' → ' + escapeHtml(r.assignedEmail) : '';
       const scheme = r.scheme ? '[' + escapeHtml(r.scheme) + '] ' : '';
       const label = escapeHtml(r.maskedUrl || r.raw);
-      return '<div class="test-log-line"><span class="font-mono text-xs">' + scheme + label + target +
-        '</span> <span class="' + cls + '">' + escapeHtml(status) + '</span></div>';
+      return '<div class="proxy-import-row">' +
+        '<span class="font-mono text-xs proxy-import-url" title="' + escapeAttr((r.scheme ? r.scheme + ' ' : '') + (r.maskedUrl || r.raw)) + '">' + scheme + label + target + '</span>' +
+        '<span class="' + cls + ' proxy-import-status">' + escapeHtml(status) + '</span>' +
+        '</div>';
     }).join('');
-    box.innerHTML = rows || '<p class="help-block">' + escapeHtml(t('proxyImport.noResults')) + '</p>';
+    box.innerHTML = summary + rows;
+  }
+  async function loadProxyPool() {
+    const box = $('proxyPoolList');
+    if (!box) return;
+    try {
+      const res = await api('/proxy/pool');
+      const d = await res.json();
+      renderProxyPool(d.pool || []);
+    } catch (e) {
+      box.innerHTML = '<p class="help-block error-text">' + escapeHtml(t('common.failed')) + '</p>';
+    }
+  }
+  function renderProxyPool(pool) {
+    const box = $('proxyPoolList');
+    if (!box) return;
+    if (!pool.length) {
+      box.innerHTML = '<p class="help-block">' + escapeHtml(t('settings.proxyPoolEmpty')) + '</p>';
+      return;
+    }
+    box.innerHTML = pool.map(p => {
+      const masked = maskProxyForDisplay(p.url) || '•••';
+      let dotCls, stateLabel;
+      if (p.disabledPermanent) { dotCls = 'disabled'; stateLabel = t('settings.proxyPoolDisabled'); }
+      else if (p.healthy) { dotCls = 'healthy'; stateLabel = t('settings.proxyPoolHealthy'); }
+      else { dotCls = 'unhealthy'; stateLabel = t('settings.proxyPoolUnhealthy'); }
+      const fail = (p.failCount || 0) > 0 ? '<span class="applied-proxy-count">' + escapeHtml(t('settings.proxyPoolFailCount', p.failCount)) + '</span>' : '';
+      const toggleLabel = p.disabledPermanent ? t('common.enable') : t('common.disable');
+      return '<div class="proxy-pool-row">' +
+        '<span class="proxy-health-dot ' + dotCls + '" title="' + escapeAttr(stateLabel) + '"></span>' +
+        '<span class="font-mono text-xs" title="' + escapeAttr(masked) + '">' + escapeHtml(masked) + '</span>' +
+        fail +
+        '<span class="proxy-pool-actions">' +
+        '<button class="btn btn-sm" data-pool-action="toggle" data-url="' + escapeAttr(p.url) + '" data-disabled="' + (p.disabledPermanent ? '0' : '1') + '">' + escapeHtml(toggleLabel) + '</button>' +
+        '<button class="btn btn-sm btn-danger" data-pool-action="remove" data-url="' + escapeAttr(p.url) + '">' + escapeHtml(t('settings.proxyPoolRemove')) + '</button>' +
+        '</span>' +
+        '</div>';
+    }).join('');
+  }
+  async function removeProxyFromPool(url) {
+    try {
+      const res = await api('/proxy/pool', { method: 'DELETE', body: JSON.stringify({ url }) });
+      const d = await res.json().catch(() => ({}));
+      if (res.ok && d.success !== false) loadProxyPool();
+      else toast(t('common.failed') + ': ' + (d.error || ''), 'error');
+    } catch (e) {
+      toast(t('common.failed'), 'error');
+    }
+  }
+  async function toggleProxyPool(url, disabled) {
+    try {
+      const res = await api('/proxy/pool/toggle', { method: 'POST', body: JSON.stringify({ url, disabled }) });
+      const d = await res.json().catch(() => ({}));
+      if (res.ok && d.success !== false) loadProxyPool();
+      else toast(t('common.failed') + ': ' + (d.error || ''), 'error');
+    } catch (e) {
+      toast(t('common.failed'), 'error');
+    }
   }
   async function saveRequireApiKey() {
     try {
@@ -3681,7 +3808,7 @@
     if (checkUpdateBtn) checkUpdateBtn.addEventListener('click', () => checkUpdate(true));
 
     document.body.addEventListener('click', e => {
-      if (!e.target.closest('.custom-select')) closeAllCustomSelects();
+      if (!e.target.closest('.custom-select') && !e.target.closest('.custom-select-content')) closeAllCustomSelects();
       const lb = e.target.closest('.lang-btn');
       if (lb) setLang(lb.dataset.lang);
       const lt = e.target.closest('.lang-toggle');
@@ -3700,6 +3827,18 @@
     if (apiLogRefresh) apiLogRefresh.addEventListener('click', loadApiLog);
     const apiLogKeyFilter = $('apiLogKeyFilter');
     if (apiLogKeyFilter) apiLogKeyFilter.addEventListener('change', loadApiLog);
+    const logsFilterSelect = $('logsFilterSelect');
+    if (logsFilterSelect) logsFilterSelect.addEventListener('change', () => { apiLogFilter = logsFilterSelect.value; renderApiLog(apiLogCache); });
+    const logsSearchInput = $('logsSearchInput');
+    if (logsSearchInput) logsSearchInput.addEventListener('input', () => { apiLogSearch = logsSearchInput.value.trim(); renderApiLog(apiLogCache); });
+    const logsExportJsonBtn = $('logsExportJsonBtn');
+    if (logsExportJsonBtn) logsExportJsonBtn.addEventListener('click', () => exportApiLog('json'));
+    const logsExportCsvBtn = $('logsExportCsvBtn');
+    if (logsExportCsvBtn) logsExportCsvBtn.addEventListener('click', () => exportApiLog('csv'));
+    const logsAutoRefresh = $('logsAutoRefresh');
+    if (logsAutoRefresh) logsAutoRefresh.addEventListener('change', toggleApiLogAutoRefresh);
+    const logsClearBtn = $('logsClearBtn');
+    if (logsClearBtn) logsClearBtn.addEventListener('click', clearApiLog);
     qsa('[data-copy]').forEach(btn => btn.addEventListener('click', async () => {
       const id = btn.dataset.copy;
       const target = $(id);
@@ -3767,6 +3906,13 @@
     const savePbu = $('savePublicBaseURLBtn');
     if (savePbu) savePbu.addEventListener('click', savePublicBaseURL);
     $('proxyImportBtn').addEventListener('click', importProxies);
+    $('proxyPoolList').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-pool-action]');
+      if (!btn) return;
+      const url = btn.dataset.url;
+      if (btn.dataset.poolAction === 'remove') removeProxyFromPool(url);
+      else if (btn.dataset.poolAction === 'toggle') toggleProxyPool(url, btn.dataset.disabled === '1');
+    });
     $('resetStatsBtn').addEventListener('click', resetStats);
     bindApiKeyEvents();
   }

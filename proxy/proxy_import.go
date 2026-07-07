@@ -231,6 +231,7 @@ type ImportProxiesResult struct {
 	Assigned     bool   `json:"assigned"`
 	Tested       bool   `json:"tested"`
 	TestPassed   bool   `json:"testPassed"`
+	AddedToPool  bool   `json:"addedToPool,omitempty"`
 	Error        string `json:"error,omitempty"`
 }
 
@@ -331,6 +332,64 @@ func (h *Handler) ImportAndAssignProxies(rawText string, targetIDs []string, aut
 	return results
 }
 
+// ImportProxiesToPool parses raw proxy lines, probes each one's working scheme,
+// and adds reachable proxies to the shared proxy pool instead of assigning them
+// to accounts. Deduplication and persistence are handled by config.AddProxyToPool.
+//
+// dryRun parses and probes but does not persist to the pool.
+func (h *Handler) ImportProxiesToPool(rawText string, dryRun bool) []ImportProxiesResult {
+	lines := strings.Split(rawText, "\n")
+
+	var results []ImportProxiesResult
+	added := 0
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		res := ImportProxiesResult{Raw: strings.TrimSpace(line)}
+
+		p, err := parseProxyLine(line)
+		if err != nil {
+			res.Error = "parse: " + err.Error()
+			results = append(results, res)
+			continue
+		}
+
+		scheme, perr := probeProxyScheme(p)
+		if perr != nil {
+			res.Error = "unreachable: " + perr.Error()
+			res.MaskedURL = p.MaskedURL()
+			results = append(results, res)
+			continue
+		}
+		p.Scheme = scheme
+		res.Scheme = scheme
+		res.Reachable = true
+		res.MaskedURL = p.MaskedURL()
+
+		if dryRun {
+			results = append(results, res)
+			continue
+		}
+
+		// 加入共享代理池（AddProxyToPool 内部去重并持久化）。
+		if err := config.AddProxyToPool(p.fullURL(scheme)); err != nil {
+			res.Error = "pool: " + err.Error()
+			results = append(results, res)
+			continue
+		}
+		res.AddedToPool = true
+		added++
+
+		results = append(results, res)
+	}
+
+	logger.Infof("[ProxyImport] processed %d lines, addedToPool %d (dryRun=%v)",
+		len(results), added, dryRun)
+	return results
+}
+
 // testAccountThroughProxy sends a minimal real request through the account's
 // configured proxy, mirroring apiTestAccount but without HTTP plumbing.
 func (h *Handler) testAccountThroughProxy(account *config.Account) error {
@@ -375,6 +434,7 @@ func (h *Handler) apiImportProxies(w http.ResponseWriter, r *http.Request) {
 		AccountIDs []string `json:"accountIds"`
 		AutoTest   bool     `json:"autoTest"`
 		DryRun     bool     `json:"dryRun"`
+		Target     string   `json:"target"` // "accounts" (default) | "pool"
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -387,9 +447,14 @@ func (h *Handler) apiImportProxies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := h.ImportAndAssignProxies(req.Proxies, req.AccountIDs, req.AutoTest, req.DryRun)
+	var results []ImportProxiesResult
+	if req.Target == "pool" {
+		results = h.ImportProxiesToPool(req.Proxies, req.DryRun)
+	} else {
+		results = h.ImportAndAssignProxies(req.Proxies, req.AccountIDs, req.AutoTest, req.DryRun)
+	}
 
-	assigned, reachable, testPassed := 0, 0, 0
+	assigned, reachable, testPassed, addedToPool := 0, 0, 0, 0
 	for _, r := range results {
 		if r.Reachable {
 			reachable++
@@ -400,14 +465,18 @@ func (h *Handler) apiImportProxies(w http.ResponseWriter, r *http.Request) {
 		if r.TestPassed {
 			testPassed++
 		}
+		if r.AddedToPool {
+			addedToPool++
+		}
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":    true,
-		"total":      len(results),
-		"reachable":  reachable,
-		"assigned":   assigned,
-		"testPassed": testPassed,
-		"results":    results,
+		"success":     true,
+		"total":       len(results),
+		"reachable":   reachable,
+		"assigned":    assigned,
+		"testPassed":  testPassed,
+		"addedToPool": addedToPool,
+		"results":     results,
 	})
 }
