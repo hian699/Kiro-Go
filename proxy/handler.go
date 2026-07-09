@@ -536,9 +536,13 @@ func buildAnthropicModelsResponse(cached []ModelInfo, thinkingSuffix string) []m
 	if len(cached) > 0 {
 		for _, m := range cached {
 			supportsImage := modelSupportsImage(m.InputTypes)
-			models = append(models, buildModelInfo(m.ModelId, "anthropic", supportsImage))
+			// Expose the dash form (claude-opus-4-8) to clients even though Kiro
+			// advertises the dot form; ParseModelAndThinking maps it back on the
+			// way upstream.
+			displayID := ToDisplayModelID(m.ModelId)
+			models = append(models, buildModelInfo(displayID, "anthropic", supportsImage))
 			// 自动生成 thinking 变体
-			models = append(models, buildModelInfo(m.ModelId+thinkingSuffix, "anthropic", supportsImage))
+			models = append(models, buildModelInfo(displayID+thinkingSuffix, "anthropic", supportsImage))
 		}
 	}
 	return models

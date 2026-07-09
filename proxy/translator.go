@@ -128,6 +128,22 @@ func MapModel(model string) string {
 	return mapped
 }
 
+// displayVersionPattern normalizes "claude-{family}-N.M" to the dash form
+// "claude-{family}-N-M" for client-facing display (e.g. /v1/models). It is the
+// inverse of claudeVersionPattern. Kiro upstream advertises model ids in the dot
+// form (claude-opus-4.8); we expose the dash form (claude-opus-4-8) to clients,
+// while ParseModelAndThinking maps whatever the client sends back to the dot form
+// before calling upstream. Minor is capped at 1-2 digits with a \b boundary so
+// dated snapshots are not rewritten.
+var displayVersionPattern = regexp.MustCompile(`claude-(opus|sonnet|haiku)-(\d+)\.(\d{1,2})\b`)
+
+// ToDisplayModelID converts a Kiro model id (dot form) into the dash form shown
+// to clients. Non-matching ids (bare families, dated snapshots, dash-form
+// inputs) pass through unchanged.
+func ToDisplayModelID(model string) string {
+	return displayVersionPattern.ReplaceAllString(model, "claude-$1-$2-$3")
+}
+
 // ==================== Claude API 类型 ====================
 
 type ClaudeRequest struct {

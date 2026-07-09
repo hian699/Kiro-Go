@@ -458,6 +458,29 @@ func TestParseModelAndThinking(t *testing.T) {
 	}
 }
 
+func TestToDisplayModelID(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"opus dot to dash", "claude-opus-4.8", "claude-opus-4-8"},
+		{"sonnet dot to dash", "claude-sonnet-4.6", "claude-sonnet-4-6"},
+		{"haiku dot to dash", "claude-haiku-4.5", "claude-haiku-4-5"},
+		{"already dash passes through", "claude-opus-4-8", "claude-opus-4-8"},
+		{"bare family passes through", "claude-sonnet-4", "claude-sonnet-4"},
+		{"dated snapshot not rewritten", "claude-sonnet-4-20250514", "claude-sonnet-4-20250514"},
+		{"non-claude passes through", "gpt-4o", "gpt-4o"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ToDisplayModelID(tc.in); got != tc.want {
+				t.Errorf("ToDisplayModelID(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseModelAndThinkingDoesNotRewriteDatedSnapshotMinor(t *testing.T) {
 	// Guards the \b boundary in claudeVersionPattern: without it, the regex would
 	// rewrite "claude-sonnet-4-20250514" to "claude-sonnet-4.20250514" before the
