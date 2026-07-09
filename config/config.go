@@ -271,6 +271,16 @@ type Config struct {
 	// Defaults to true. Set to false to only use the preferred endpoint.
 	EndpointFallback *bool `json:"endpointFallback,omitempty"`
 
+	// KeepToolHistory controls whether the proxy preserves structured tool
+	// calls/results for every correctly-paired tool turn in conversation history
+	// (assistant toolUses immediately answered by the next user turn's toolResults),
+	// instead of flattening all but the last active turn to plain text. Keeping the
+	// invocation→result pattern helps agentic clients (e.g. Claude Code) continue
+	// issuing structured tool calls — including subagent/workflow orchestration.
+	// The request handlers automatically fall back to the flattened payload if the
+	// upstream rejects the richer one, so enabling this is safe. Defaults to true.
+	KeepToolHistory *bool `json:"keepToolHistory,omitempty"`
+
 	// Global default regions. Used as a fallback when an account does not
 	// specify its own region. All default to "us-east-1" when empty.
 	Region     string `json:"region,omitempty"`     // Default region for both auth and API
@@ -1054,6 +1064,25 @@ func UpdateEndpointFallback(enabled bool) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.EndpointFallback = &enabled
+	return Save()
+}
+
+// GetKeepToolHistory returns whether structured tool turns are preserved in
+// conversation history. Defaults to true.
+func GetKeepToolHistory() bool {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.KeepToolHistory == nil {
+		return true
+	}
+	return *cfg.KeepToolHistory
+}
+
+// UpdateKeepToolHistory sets the keep-tool-history switch and persists the change.
+func UpdateKeepToolHistory(enabled bool) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.KeepToolHistory = &enabled
 	return Save()
 }
 

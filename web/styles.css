@@ -4210,7 +4210,6 @@ body:has(#tabApilog:not(.hidden)) #mainPage > .container {
 .data-table tbody tr:hover {
   background: rgba(127, 127, 127, 0.06);
 }
-.apilog-summary,
 .usage-totals {
   display: flex;
   flex-wrap: wrap;
@@ -4220,16 +4219,6 @@ body:has(#tabApilog:not(.hidden)) #mainPage > .container {
 .usage-totals .stat-card {
   flex: 1 1 140px;
   min-width: 120px;
-}
-.apilog-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.2rem 0.6rem;
-  border-radius: 999px;
-  background: rgba(59, 130, 246, 0.12);
-  color: #3b82f6;
-  font-size: 0.75rem;
-  font-weight: 600;
 }
 .metrics-summary {
   display: flex;

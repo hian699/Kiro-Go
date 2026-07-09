@@ -1558,6 +1558,7 @@
     const d = await res.json();
     $('requireApiKey').checked = d.requireApiKey;
     $('allowOverUsage').checked = d.allowOverUsage || false;
+    if ($('keepToolHistory')) $('keepToolHistory').checked = d.keepToolHistory !== false;
     $('maxPayloadBytes').value = String(d.maxPayloadBytes || 2000000);
     if ($('stickyPinTtl')) $('stickyPinTtl').value = String(d.stickyPinTtlSeconds || 300);
     if ($('publicBaseURL')) $('publicBaseURL').value = d.publicBaseURL || '';
@@ -1834,9 +1835,10 @@
   }
   async function saveOverUsageConfig() {
     const allowOverUsage = $('allowOverUsage').checked;
+    const keepToolHistory = $('keepToolHistory') ? $('keepToolHistory').checked : true;
     const maxPayloadBytes = parseInt($('maxPayloadBytes').value, 10);
     const stickyPinTtlSeconds = parseInt($('stickyPinTtl').value, 10);
-    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes, stickyPinTtlSeconds }) });
+    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, keepToolHistory, maxPayloadBytes, stickyPinTtlSeconds }) });
     toast(t('settings.overUsageSaved'), 'success');
   }
   async function changePassword() {
@@ -3901,14 +3903,24 @@
     return out;
   }
 
-  function renderApiLogMetrics(entries) {
+  function renderApiLogMetrics(entries, showActual) {
     const box = $('metricsSummary');
     if (!box) return;
     const total = entries.length;
-    let errorCount = 0, durSum = 0, durCount = 0;
+    let errorCount = 0, durSum = 0, durCount = 0, sumTokens = 0, sumCredits = 0;
     for (const e of entries) {
       if (e.status === 'error') errorCount++;
       if (e.durationMs) { durSum += e.durationMs; durCount++; }
+      const billedInput = e.inputTokens || 0;
+      const billedOutput = e.outputTokens || 0;
+      const billedTotal = e.totalTokens || (billedInput + billedOutput);
+      const billedCredits = e.credits || 0;
+      const actualInput = e.actualInputTokens != null ? e.actualInputTokens : billedInput;
+      const actualOutput = e.actualOutputTokens != null ? e.actualOutputTokens : billedOutput;
+      const actualTotal = e.actualTotalTokens != null ? e.actualTotalTokens : (actualInput + actualOutput || billedTotal);
+      const actualCredits = e.actualCredits != null ? e.actualCredits : billedCredits;
+      sumTokens += showActual ? actualTotal : billedTotal;
+      sumCredits += showActual ? actualCredits : billedCredits;
     }
     const avg = durCount ? Math.round(durSum / durCount) : 0;
     const chip = (label, value, danger) =>
@@ -3919,7 +3931,10 @@
     box.innerHTML =
       chip(t('metrics.logCount'), String(total), false) +
       chip(t('metrics.avgLatency'), String(avg) + 'ms', false) +
-      chip(t('metrics.quotaErrors'), String(errorCount), errorCount > 0);
+      chip(t('metrics.quotaErrors'), String(errorCount), errorCount > 0) +
+      chip(showActual ? t('apilog.modeActual') : t('apilog.modeBill'), '', false) +
+      chip(t('metrics.tokens'), formatNumber(sumTokens), false) +
+      chip(t('metrics.credits'), formatNumber(sumCredits), false);
   }
 
   function renderApiLog(allEntries) {
@@ -3929,7 +3944,7 @@
     if (!body) return;
     const entries = filterApiLog(allEntries);
     const showActual = $('apiLogActualToggle') ? $('apiLogActualToggle').checked : false;
-    renderApiLogMetrics(entries);
+    renderApiLogMetrics(entries, showActual);
     if (!entries.length) {
       body.innerHTML = '';
       if (empty) empty.classList.remove('hidden');
@@ -3937,8 +3952,8 @@
       return;
     }
     if (empty) empty.classList.add('hidden');
+    if (summary) summary.innerHTML = '';
 
-    let sumInput = 0, sumOutput = 0, sumCredits = 0, errorCount = 0;
     const rows = entries.map(e => {
       const billedInput = e.inputTokens || 0;
       const billedOutput = e.outputTokens || 0;
@@ -3952,11 +3967,7 @@
       const viewOutput = showActual ? actualOutput : billedOutput;
       const viewTotal = showActual ? actualTotal : billedTotal;
       const viewCredits = showActual ? actualCredits : billedCredits;
-      sumInput += viewInput;
-      sumOutput += viewOutput;
-      sumCredits += viewCredits;
       const isError = e.status === 'error';
-      if (isError) errorCount++;
       const keyLabel = e.apiKeyMasked
         ? (e.apiKeyName ? escapeHtml(e.apiKeyName) + ' ' : '') + '<span class="font-mono text-xs">' + escapeHtml(e.apiKeyMasked) + '</span>'
         : '<span class="muted-text">' + escapeHtml(t('apilog.noKey')) + '</span>';
@@ -3987,18 +3998,6 @@
         '</tr>';
     }).join('');
     body.innerHTML = rows;
-
-    if (summary) {
-      const errChip = errorCount
-        ? '<span class="apilog-chip" style="color:#ef4444;">' + escapeHtml(t('apilog.totalErrors', errorCount)) + '</span>'
-        : '';
-      summary.innerHTML =
-        '<span class="apilog-chip">' + escapeHtml(t('apilog.totalRequests', entries.length)) + '</span>' +
-        errChip +
-        '<span class="apilog-chip">' + escapeHtml(showActual ? t('apilog.modeActual') : t('apilog.modeBill')) + '</span>' +
-        '<span class="apilog-chip">' + escapeHtml(t('apilog.totalTokens', formatNumber(sumInput + sumOutput))) + '</span>' +
-        '<span class="apilog-chip">' + escapeHtml(t('apilog.totalCredits', formatNumber(sumCredits))) + '</span>';
-    }
   }
 
   async function clearApiLog() {

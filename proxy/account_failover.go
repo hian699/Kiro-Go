@@ -32,6 +32,21 @@ func isProfileUnavailableErrorMessage(msg string) bool {
 	return strings.Contains(msg, "no available kiro profile")
 }
 
+// isMalformedPayloadError matches an upstream HTTP 400 caused by the shape/size
+// of the request payload rather than by anything wrong with the account:
+// "Improperly formed request" (structured tool data the upstream dislikes) or
+// CONTENT_LENGTH_EXCEEDS_THRESHOLD (payload too large). This is used to trigger a
+// same-account retry with a simpler payload and MUST NOT flow into
+// handleAccountFailure — penalizing an account for a payload issue is wrong.
+func isMalformedPayloadError(msg string) bool {
+	msg = strings.ToLower(msg)
+	if !strings.Contains(msg, "http 400") {
+		return false
+	}
+	return strings.Contains(msg, "improperly formed") ||
+		strings.Contains(msg, "content_length_exceeds_threshold")
+}
+
 func isAuthErrorMessage(msg string) bool {
 	msg = strings.ToLower(msg)
 	return strings.Contains(msg, "http 401") ||
@@ -169,6 +184,10 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 
 	errMsg := err.Error()
 	switch {
+	case isMalformedPayloadError(errMsg):
+		// Payload shape/size problem, not an account problem. Do not penalize the
+		// account — the request handler retries with a simpler payload instead.
+		logger.Warnf("[AccountFailover] Malformed-payload upstream rejection for %s (not penalizing account): %v", account.Email, err)
 	case isProxyErrorMessage(errMsg):
 		// Proxy/dial failure — cool down and rotate; never disable the account
 		// and never fall through to a direct connection.
@@ -191,4 +210,27 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 	default:
 		h.pool.RecordError(account.ID, false)
 	}
+}
+
+// callWithHistoryFallback calls CallKiroAPI with the richer payload first and, if
+// the upstream rejects it with a malformed-payload 400 AND nothing has been
+// streamed to the client yet, retries the SAME account once with the flattened
+// safe payload. The safe retry avoids penalizing the account and never rotates.
+//
+// rich and safe may be the same pointer (when KeepToolHistory is off), in which
+// case no fallback is attempted. started() reports whether any bytes have been
+// sent to the client — once true, a retry would corrupt the stream, so the
+// original error is returned unchanged for the caller's normal error path.
+func callWithHistoryFallback(account *config.Account, rich, safe *KiroPayload, callback *KiroStreamCallback, started func() bool) error {
+	err := CallKiroAPI(account, rich, callback)
+	if err == nil {
+		return nil
+	}
+	// Only fall back when: the rich payload was genuinely different, the failure
+	// is a payload-shape 400, and we have not emitted anything to the client yet.
+	if rich == safe || !isMalformedPayloadError(err.Error()) || started() {
+		return err
+	}
+	logger.Warnf("[HistoryFallback] Rich payload rejected (%v); retrying same account with flattened history", err)
+	return CallKiroAPI(account, safe, callback)
 }
