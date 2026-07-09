@@ -546,20 +546,20 @@ func buildAnthropicModelsResponse(cached []ModelInfo, thinkingSuffix string) []m
 
 func fallbackAnthropicModels(thinkingSuffix string) []map[string]interface{} {
 	return []map[string]interface{}{
-		buildModelInfo("claude-sonnet-4.6", "anthropic", true),
-		buildModelInfo("claude-sonnet-4.6"+thinkingSuffix, "anthropic", true),
-		buildModelInfo("claude-opus-4.6", "anthropic", true),
-		buildModelInfo("claude-opus-4.6"+thinkingSuffix, "anthropic", true),
-		buildModelInfo("claude-opus-4.7", "anthropic", true),
-		buildModelInfo("claude-opus-4.7"+thinkingSuffix, "anthropic", true),
-		buildModelInfo("claude-sonnet-4.5", "anthropic", true),
-		buildModelInfo("claude-sonnet-4.5"+thinkingSuffix, "anthropic", true),
+		buildModelInfo("claude-sonnet-4-6", "anthropic", true),
+		buildModelInfo("claude-sonnet-4-6"+thinkingSuffix, "anthropic", true),
+		buildModelInfo("claude-opus-4-6", "anthropic", true),
+		buildModelInfo("claude-opus-4-6"+thinkingSuffix, "anthropic", true),
+		buildModelInfo("claude-opus-4-7", "anthropic", true),
+		buildModelInfo("claude-opus-4-7"+thinkingSuffix, "anthropic", true),
+		buildModelInfo("claude-sonnet-4-5", "anthropic", true),
+		buildModelInfo("claude-sonnet-4-5"+thinkingSuffix, "anthropic", true),
 		buildModelInfo("claude-sonnet-4", "anthropic", true),
 		buildModelInfo("claude-sonnet-4"+thinkingSuffix, "anthropic", true),
-		buildModelInfo("claude-haiku-4.5", "anthropic", true),
-		buildModelInfo("claude-haiku-4.5"+thinkingSuffix, "anthropic", true),
-		buildModelInfo("claude-opus-4.5", "anthropic", true),
-		buildModelInfo("claude-opus-4.5"+thinkingSuffix, "anthropic", true),
+		buildModelInfo("claude-haiku-4-5", "anthropic", true),
+		buildModelInfo("claude-haiku-4-5"+thinkingSuffix, "anthropic", true),
+		buildModelInfo("claude-opus-4-5", "anthropic", true),
+		buildModelInfo("claude-opus-4-5"+thinkingSuffix, "anthropic", true),
 	}
 }
 

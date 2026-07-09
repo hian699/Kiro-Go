@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const defaultResponsesModel = "claude-sonnet-4.5"
+const defaultResponsesModel = "claude-sonnet-4-5"
 
 func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
