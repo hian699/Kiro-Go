@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"math"
 	"strings"
 	"time"
 )
@@ -134,6 +135,9 @@ func UpdateApiKey(id string, patch ApiKeyEntry) error {
 	cfg.ApiKeys[idx].IPAllowlist = patch.IPAllowlist
 	cfg.ApiKeys[idx].RPMLimit = patch.RPMLimit
 	cfg.ApiKeys[idx].TPMLimit = patch.TPMLimit
+	cfg.ApiKeys[idx].BillingMultiplierEnabled = patch.BillingMultiplierEnabled
+	cfg.ApiKeys[idx].TokenMultiplier = patch.TokenMultiplier
+	cfg.ApiKeys[idx].CreditMultiplier = patch.CreditMultiplier
 	if patch.Migrated {
 		cfg.ApiKeys[idx].Migrated = true
 	}
@@ -210,9 +214,56 @@ func HasApiKeys() bool {
 	return len(cfg.ApiKeys) > 0
 }
 
-// RecordApiKeyUsage atomically adds tokens and credits to the entry's counters,
-// updates LastUsedAt, increments RequestsCount, and persists.
+// EffectiveTokenMultiplier returns the customer-billing token multiplier for an
+// API key. Disabled or invalid values collapse to 1.0.
+func EffectiveTokenMultiplier(e ApiKeyEntry) float64 {
+	if !e.BillingMultiplierEnabled || e.TokenMultiplier < 1 {
+		return 1
+	}
+	return e.TokenMultiplier
+}
+
+// EffectiveCreditMultiplier returns the customer-billing credit multiplier for
+// an API key. Disabled or invalid values collapse to 1.0.
+func EffectiveCreditMultiplier(e ApiKeyEntry) float64 {
+	if !e.BillingMultiplierEnabled || e.CreditMultiplier < 1 {
+		return 1
+	}
+	return e.CreditMultiplier
+}
+
+func ceilPositive(v float64) int {
+	if v <= 0 {
+		return 0
+	}
+	return int(math.Ceil(v))
+}
+
+// ApplyBillingMultiplier converts actual upstream usage into customer-facing
+// billed usage for this key. Token counters are rounded up so fractional
+// multipliers never undercount a request.
+func ApplyBillingMultiplier(e ApiKeyEntry, inputTokens, outputTokens int, credits float64) (billedInput, billedOutput int, billedCredits float64) {
+	tokenMultiplier := EffectiveTokenMultiplier(e)
+	creditMultiplier := EffectiveCreditMultiplier(e)
+	billedInput = ceilPositive(float64(inputTokens) * tokenMultiplier)
+	billedOutput = ceilPositive(float64(outputTokens) * tokenMultiplier)
+	if credits > 0 {
+		billedCredits = credits * creditMultiplier
+	}
+	return billedInput, billedOutput, billedCredits
+}
+
+// RecordApiKeyUsage atomically adds billed tokens and credits to the entry's
+// customer-facing counters, updates LastUsedAt, increments RequestsCount, and
+// persists. The same values are also used as actual usage for compatibility with
+// callers that do not split billed vs upstream usage.
 func RecordApiKeyUsage(id string, tokens int64, credits float64) error {
+	return RecordApiKeyUsageDetailed(id, tokens, credits, tokens, credits)
+}
+
+// RecordApiKeyUsageDetailed atomically records both customer-facing billed
+// usage and actual upstream usage for admin reconciliation.
+func RecordApiKeyUsageDetailed(id string, billedTokens int64, billedCredits float64, actualTokens int64, actualCredits float64) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	if cfg == nil {
@@ -220,11 +271,17 @@ func RecordApiKeyUsage(id string, tokens int64, credits float64) error {
 	}
 	for i := range cfg.ApiKeys {
 		if cfg.ApiKeys[i].ID == id {
-			if tokens > 0 {
-				cfg.ApiKeys[i].TokensUsed += tokens
+			if billedTokens > 0 {
+				cfg.ApiKeys[i].TokensUsed += billedTokens
 			}
-			if credits > 0 {
-				cfg.ApiKeys[i].CreditsUsed += credits
+			if billedCredits > 0 {
+				cfg.ApiKeys[i].CreditsUsed += billedCredits
+			}
+			if actualTokens > 0 {
+				cfg.ApiKeys[i].ActualTokensUsed += actualTokens
+			}
+			if actualCredits > 0 {
+				cfg.ApiKeys[i].ActualCreditsUsed += actualCredits
 			}
 			cfg.ApiKeys[i].RequestsCount++
 			cfg.ApiKeys[i].LastUsedAt = time.Now().Unix()
@@ -246,6 +303,8 @@ func ResetApiKeyUsage(id string) error {
 		if cfg.ApiKeys[i].ID == id {
 			cfg.ApiKeys[i].TokensUsed = 0
 			cfg.ApiKeys[i].CreditsUsed = 0
+			cfg.ApiKeys[i].ActualTokensUsed = 0
+			cfg.ApiKeys[i].ActualCreditsUsed = 0
 			cfg.ApiKeys[i].RequestsCount = 0
 			return saveLocked()
 		}

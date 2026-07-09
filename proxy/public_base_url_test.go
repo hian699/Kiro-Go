@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"kiro-go/config"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -31,4 +32,40 @@ func TestResolvePublicBaseURL(t *testing.T) {
 			t.Fatalf("unset: got %q, want empty", got)
 		}
 	})
+}
+
+func TestSelfServiceBaseURLUsesAPIBaseURL(t *testing.T) {
+	mustInitConfig(t)
+
+	if err := config.UpdatePublicBaseURL("https://sso.example.com/"); err != nil {
+		t.Fatalf("set public base url: %v", err)
+	}
+	if err := config.UpdateAPIBaseURL("https://api.example.com/"); err != nil {
+		t.Fatalf("set api base url: %v", err)
+	}
+	defer config.UpdatePublicBaseURL("")
+	defer config.UpdateAPIBaseURL("")
+
+	req := httptest.NewRequest("GET", "https://admin.example.com/v1/key/info", nil)
+	if got := selfServiceBaseURL(req); got != "https://api.example.com" {
+		t.Fatalf("got %q, want API base URL", got)
+	}
+}
+
+func TestSelfServiceBaseURLFallsBackToRequestHost(t *testing.T) {
+	mustInitConfig(t)
+
+	if err := config.UpdatePublicBaseURL("https://sso.example.com/"); err != nil {
+		t.Fatalf("set public base url: %v", err)
+	}
+	if err := config.UpdateAPIBaseURL(""); err != nil {
+		t.Fatalf("clear api base url: %v", err)
+	}
+	defer config.UpdatePublicBaseURL("")
+
+	req := httptest.NewRequest("GET", "http://api.example.com/v1/key/info", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	if got := selfServiceBaseURL(req); got != "https://api.example.com" {
+		t.Fatalf("got %q, want request host fallback", got)
+	}
 }

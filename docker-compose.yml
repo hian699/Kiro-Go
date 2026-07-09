@@ -1,16 +1,25 @@
 services:
   kiro-go:
+    image: kiro-go:latest
     build: .
     ports:
-      - "8080:8080"
-      - "3128:3128"
-      - "4649:4649"
-      - "6588:6588"
-      - "8008:8008"
-      - "9091:9091"
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:3128:3128"
+      - "127.0.0.1:4649:4649"
+      - "127.0.0.1:6588:6588"
+      - "127.0.0.1:8008:8008"
+      - "127.0.0.1:9091:9091"
     volumes:
       - ./data:/app/data
     environment:
       - CONFIG_PATH=/app/data/config.json
       - LOOPBACK_HOST=0.0.0.0
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - kiro-go
     restart: unless-stopped

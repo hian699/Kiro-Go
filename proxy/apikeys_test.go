@@ -291,6 +291,53 @@ func TestRecordSuccessForApiKeyUpdatesEntry(t *testing.T) {
 	}
 }
 
+func TestRecordSuccessForApiKeyAppliesBillingMultiplier(t *testing.T) {
+	mustInitConfig(t)
+	requestLog.reset()
+	created, err := config.AddApiKey(config.ApiKeyEntry{
+		Name:                     "bill",
+		Key:                      "sk-bill",
+		Enabled:                  true,
+		BillingMultiplierEnabled: true,
+		TokenMultiplier:          2,
+		CreditMultiplier:         2,
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	h := &Handler{}
+	h.recordSuccessForApiKey(created.ID, 25, 30, 0.75, "claude-test", nil, "claude", time.Time{}, "1.2.3.4")
+
+	got := config.GetApiKeyEntry(created.ID)
+	if got == nil {
+		t.Fatalf("entry missing")
+	}
+	if got.TokensUsed != 110 {
+		t.Fatalf("expected billed TokensUsed=110, got %d", got.TokensUsed)
+	}
+	if got.ActualTokensUsed != 55 {
+		t.Fatalf("expected actual tokens=55, got %d", got.ActualTokensUsed)
+	}
+	if got.CreditsUsed != 1.5 {
+		t.Fatalf("expected billed credits=1.5, got %v", got.CreditsUsed)
+	}
+	if got.ActualCreditsUsed != 0.75 {
+		t.Fatalf("expected actual credits=0.75, got %v", got.ActualCreditsUsed)
+	}
+
+	logs := requestLog.snapshot()
+	if len(logs) != 1 {
+		t.Fatalf("expected one request log, got %d", len(logs))
+	}
+	if logs[0].TotalTokens != 110 || logs[0].ActualTotalTokens != 55 {
+		t.Fatalf("expected billed/actual tokens in log, got billed=%d actual=%d", logs[0].TotalTokens, logs[0].ActualTotalTokens)
+	}
+	if logs[0].Credits != 1.5 || logs[0].ActualCredits != 0.75 {
+		t.Fatalf("expected billed/actual credits in log, got billed=%v actual=%v", logs[0].Credits, logs[0].ActualCredits)
+	}
+}
+
 func TestRecordSuccessForApiKeyEmptyIDIsNoop(t *testing.T) {
 	mustInitConfig(t)
 	created, err := config.AddApiKey(config.ApiKeyEntry{Name: "noop", Key: "sk-noop", Enabled: true})

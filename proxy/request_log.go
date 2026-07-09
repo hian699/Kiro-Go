@@ -13,8 +13,8 @@ import (
 // RequestLogEntry is a single served API request, captured for the admin "API Log" view.
 // It records which API key was used, the model, token/credit cost and the serving account.
 type RequestLogEntry struct {
-	Time         int64   `json:"time"` // Unix seconds
-	Status       string  `json:"status"` // "ok" or "error"
+	Time         int64   `json:"time"`               // Unix seconds
+	Status       string  `json:"status"`             // "ok" or "error"
 	Endpoint     string  `json:"endpoint,omitempty"` // "claude" or "openai"
 	APIKeyID     string  `json:"apiKeyId,omitempty"`
 	APIKeyName   string  `json:"apiKeyName,omitempty"`
@@ -27,9 +27,19 @@ type RequestLogEntry struct {
 	OutputTokens int     `json:"outputTokens"`
 	TotalTokens  int     `json:"totalTokens"`
 	Credits      float64 `json:"credits"`
-	DurationMs   int64   `json:"durationMs"`
-	StatusCode   int     `json:"statusCode,omitempty"` // upstream/HTTP status on error
-	Error        string  `json:"error,omitempty"`      // error detail on failure
+
+	// Actual upstream usage is kept for admin reconciliation. The fields above
+	// remain the customer-facing billed usage shown in self-service views.
+	ActualInputTokens  int     `json:"actualInputTokens,omitempty"`
+	ActualOutputTokens int     `json:"actualOutputTokens,omitempty"`
+	ActualTotalTokens  int     `json:"actualTotalTokens,omitempty"`
+	ActualCredits      float64 `json:"actualCredits,omitempty"`
+	TokenMultiplier    float64 `json:"tokenMultiplier,omitempty"`
+	CreditMultiplier   float64 `json:"creditMultiplier,omitempty"`
+
+	DurationMs int64  `json:"durationMs"`
+	StatusCode int    `json:"statusCode,omitempty"` // upstream/HTTP status on error
+	Error      string `json:"error,omitempty"`      // error detail on failure
 }
 
 // requestLogCapacity is the number of recent request entries retained in memory.
@@ -92,6 +102,23 @@ func logRequest(e RequestLogEntry) {
 		e.Status = "ok"
 	}
 	e.TotalTokens = e.InputTokens + e.OutputTokens
+	if e.ActualTotalTokens == 0 {
+		e.ActualTotalTokens = e.ActualInputTokens + e.ActualOutputTokens
+	}
+	if e.ActualTotalTokens == 0 && e.TotalTokens > 0 {
+		e.ActualInputTokens = e.InputTokens
+		e.ActualOutputTokens = e.OutputTokens
+		e.ActualTotalTokens = e.TotalTokens
+	}
+	if e.ActualCredits == 0 && e.Credits > 0 {
+		e.ActualCredits = e.Credits
+	}
+	if e.TokenMultiplier == 0 {
+		e.TokenMultiplier = 1
+	}
+	if e.CreditMultiplier == 0 {
+		e.CreditMultiplier = 1
+	}
 	requestLog.add(e)
 }
 
@@ -136,22 +163,27 @@ func (h *Handler) apiClearRequestLogs(w http.ResponseWriter, r *http.Request) {
 
 // apiKeyUsageView is the per-key usage summary returned by apiGetUsageSummary.
 type apiKeyUsageView struct {
-	ID            string  `json:"id"`
-	Name          string  `json:"name,omitempty"`
-	KeyMasked     string  `json:"keyMasked"`
-	Enabled       bool    `json:"enabled"`
-	TokenLimit    int64   `json:"tokenLimit"`
-	CreditLimit   float64 `json:"creditLimit"`
-	TokensUsed    int64   `json:"tokensUsed"`
-	CreditsUsed   float64 `json:"creditsUsed"`
-	RequestsCount int64   `json:"requestsCount"`
-	TokensRemain  int64   `json:"tokensRemain"`  // -1 = unlimited
-	CreditsRemain float64 `json:"creditsRemain"` // -1 = unlimited
-	OverToken     bool    `json:"overToken"`
-	OverCredit    bool    `json:"overCredit"`
-	Expired       bool    `json:"expired"`
-	LastUsedAt    int64   `json:"lastUsedAt,omitempty"`
-	ExpiresAt     int64   `json:"expiresAt,omitempty"`
+	ID                       string  `json:"id"`
+	Name                     string  `json:"name,omitempty"`
+	KeyMasked                string  `json:"keyMasked"`
+	Enabled                  bool    `json:"enabled"`
+	TokenLimit               int64   `json:"tokenLimit"`
+	CreditLimit              float64 `json:"creditLimit"`
+	TokensUsed               int64   `json:"tokensUsed"`
+	CreditsUsed              float64 `json:"creditsUsed"`
+	ActualTokensUsed         int64   `json:"actualTokensUsed"`
+	ActualCreditsUsed        float64 `json:"actualCreditsUsed"`
+	RequestsCount            int64   `json:"requestsCount"`
+	TokensRemain             int64   `json:"tokensRemain"`  // -1 = unlimited
+	CreditsRemain            float64 `json:"creditsRemain"` // -1 = unlimited
+	OverToken                bool    `json:"overToken"`
+	OverCredit               bool    `json:"overCredit"`
+	Expired                  bool    `json:"expired"`
+	LastUsedAt               int64   `json:"lastUsedAt,omitempty"`
+	ExpiresAt                int64   `json:"expiresAt,omitempty"`
+	BillingMultiplierEnabled bool    `json:"billingMultiplierEnabled,omitempty"`
+	TokenMultiplier          float64 `json:"tokenMultiplier"`
+	CreditMultiplier         float64 `json:"creditMultiplier"`
 }
 
 // apiGetUsageSummary GET /admin/api/usage-summary - per-key credit/token usage vs limits.
@@ -161,8 +193,8 @@ func (h *Handler) apiGetUsageSummary(w http.ResponseWriter, r *http.Request) {
 	entries := config.ListApiKeys()
 	out := make([]apiKeyUsageView, 0, len(entries))
 
-	var totalTokens, totalLimitTokens int64
-	var totalCredits, totalLimitCredits float64
+	var totalTokens, totalLimitTokens, totalActualTokens int64
+	var totalCredits, totalLimitCredits, totalActualCredits float64
 	var totalRequests int64
 
 	for _, e := range entries {
@@ -182,26 +214,33 @@ func (h *Handler) apiGetUsageSummary(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		out = append(out, apiKeyUsageView{
-			ID:            e.ID,
-			Name:          e.Name,
-			KeyMasked:     config.MaskApiKey(e.Key),
-			Enabled:       e.Enabled,
-			TokenLimit:    e.TokenLimit,
-			CreditLimit:   e.CreditLimit,
-			TokensUsed:    e.TokensUsed,
-			CreditsUsed:   e.CreditsUsed,
-			RequestsCount: e.RequestsCount,
-			TokensRemain:  tokensRemain,
-			CreditsRemain: creditsRemain,
-			OverToken:     overToken,
-			OverCredit:    overCredit,
-			Expired:       config.ApiKeyExpired(e),
-			LastUsedAt:    e.LastUsedAt,
-			ExpiresAt:     e.ExpiresAt,
+			ID:                       e.ID,
+			Name:                     e.Name,
+			KeyMasked:                config.MaskApiKey(e.Key),
+			Enabled:                  e.Enabled,
+			TokenLimit:               e.TokenLimit,
+			CreditLimit:              e.CreditLimit,
+			TokensUsed:               e.TokensUsed,
+			CreditsUsed:              e.CreditsUsed,
+			ActualTokensUsed:         actualTokensUsed(e),
+			ActualCreditsUsed:        actualCreditsUsed(e),
+			RequestsCount:            e.RequestsCount,
+			TokensRemain:             tokensRemain,
+			CreditsRemain:            creditsRemain,
+			OverToken:                overToken,
+			OverCredit:               overCredit,
+			Expired:                  config.ApiKeyExpired(e),
+			LastUsedAt:               e.LastUsedAt,
+			ExpiresAt:                e.ExpiresAt,
+			BillingMultiplierEnabled: e.BillingMultiplierEnabled,
+			TokenMultiplier:          config.EffectiveTokenMultiplier(e),
+			CreditMultiplier:         config.EffectiveCreditMultiplier(e),
 		})
 		totalTokens += e.TokensUsed
+		totalActualTokens += actualTokensUsed(e)
 		totalLimitTokens += e.TokenLimit
 		totalCredits += e.CreditsUsed
+		totalActualCredits += actualCreditsUsed(e)
 		totalLimitCredits += e.CreditLimit
 		totalRequests += e.RequestsCount
 	}
@@ -209,12 +248,14 @@ func (h *Handler) apiGetUsageSummary(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"keys": out,
 		"totals": map[string]interface{}{
-			"tokensUsed":   totalTokens,
-			"tokenLimit":   totalLimitTokens,
-			"creditsUsed":  totalCredits,
-			"creditLimit":  totalLimitCredits,
-			"requests":     totalRequests,
-			"requestCount": totalRequests,
+			"tokensUsed":        totalTokens,
+			"actualTokensUsed":  totalActualTokens,
+			"tokenLimit":        totalLimitTokens,
+			"creditsUsed":       totalCredits,
+			"actualCreditsUsed": totalActualCredits,
+			"creditLimit":       totalLimitCredits,
+			"requests":          totalRequests,
+			"requestCount":      totalRequests,
 		},
 	})
 }
@@ -235,7 +276,7 @@ type apiKeySelfInfo struct {
 	OverCredit    bool    `json:"overCredit"`
 	Expired       bool    `json:"expired"`
 	ExpiresAt     int64   `json:"expiresAt,omitempty"`
-	Valid         bool    `json:"valid"` // false when the key is disabled/expired/over-limit
+	Valid         bool    `json:"valid"`             // false when the key is disabled/expired/over-limit
 	BaseURL       string  `json:"baseURL,omitempty"` // externally reachable API base, so the customer knows where to point their client
 
 	ConcurrentIPs    int `json:"concurrentIps"`
@@ -243,10 +284,10 @@ type apiKeySelfInfo struct {
 	MaxConcurrentIPs int `json:"maxConcurrentIps"`
 	MaxTotalIPs      int `json:"maxTotalIps"`
 
-	RPMLimit     int   `json:"rpmLimit"`
-	TPMLimit     int64 `json:"tpmLimit"`
-	RPMUsed      int   `json:"rpmUsed"`
-	TPMUsed      int64 `json:"tpmUsed"`
+	RPMLimit int   `json:"rpmLimit"`
+	TPMLimit int64 `json:"tpmLimit"`
+	RPMUsed  int   `json:"rpmUsed"`
+	TPMUsed  int64 `json:"tpmUsed"`
 
 	ExpiredMessage string `json:"expiredMessage,omitempty"`
 	QuotaMessage   string `json:"quotaMessage,omitempty"`
@@ -396,10 +437,10 @@ func (h *Handler) apiKeySelfInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 // selfServiceBaseURL returns the externally reachable API base URL to show the
-// customer. Prefers the admin-configured PublicBaseURL; falls back to the scheme
+// customer. Prefers the admin-configured APIBaseURL; falls back to the scheme
 // and host of the incoming request when unset.
 func selfServiceBaseURL(r *http.Request) string {
-	if u := config.GetPublicBaseURL(); u != "" {
+	if u := config.GetAPIBaseURL(); u != "" {
 		return u
 	}
 	scheme := "https"

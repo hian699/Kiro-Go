@@ -1561,6 +1561,7 @@
     $('maxPayloadBytes').value = String(d.maxPayloadBytes || 2000000);
     if ($('stickyPinTtl')) $('stickyPinTtl').value = String(d.stickyPinTtlSeconds || 300);
     if ($('publicBaseURL')) $('publicBaseURL').value = d.publicBaseURL || '';
+    if ($('apiBaseURL')) $('apiBaseURL').value = d.apiBaseURL || '';
     if ($('siteName')) $('siteName').value = d.siteName || '';
     if ($('expiredMessage')) $('expiredMessage').value = d.expiredMessage || '';
     if ($('quotaMessage')) $('quotaMessage').value = d.quotaMessage || '';
@@ -1662,6 +1663,17 @@
       const d = await res.json().catch(() => ({}));
       if (!res.ok || d.success === false) throw new Error(d.error || t('common.saveFailed'));
       toast(t('settings.publicBaseURLSaved'), 'success');
+    } catch (e) {
+      toast((e && e.message) || t('common.saveFailed'), 'error');
+    }
+  }
+  async function saveApiBaseURL() {
+    const url = $('apiBaseURL').value.trim();
+    try {
+      const res = await api('/settings', { method: 'POST', body: JSON.stringify({ apiBaseURL: url }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.success === false) throw new Error(d.error || t('common.saveFailed'));
+      toast(t('settings.apiBaseURLSaved'), 'success');
     } catch (e) {
       toast((e && e.message) || t('common.saveFailed'), 'error');
     }
@@ -1905,6 +1917,11 @@
     return '<div class="text-xs muted-text">' + escapeHtml(label) + ': ' + escapeHtml(fmt(used)) + ' / ' + escapeHtml(fmt(limit)) + '</div>' + usageBar(used, limit);
   }
 
+  function multiplierValue(v) {
+    const n = parseFloat(v);
+    return isNaN(n) || n < 1 ? 1 : n;
+  }
+
   function renderApiKeyStats() {
     const el = $('apiKeyStats');
     if (!el) return;
@@ -1956,6 +1973,18 @@
       const expiryLine = apiKeyExpiryLine(item.expiresAt);
       const tokensLine = usageLine(t('apiKeys.tokens'), item.tokensUsed || 0, item.tokenLimit || 0);
       const creditsLine = usageLine(t('apiKeys.credits'), item.creditsUsed || 0, item.creditLimit || 0);
+      const actualTokens = item.actualTokensUsed != null ? item.actualTokensUsed : (item.tokensUsed || 0);
+      const actualCredits = item.actualCreditsUsed != null ? item.actualCreditsUsed : (item.creditsUsed || 0);
+      const multiplierOn = !!item.billingMultiplierEnabled;
+      const multiplierBadge = multiplierOn
+        ? '<span class="text-xs" style="background:rgba(245,158,11,0.16);color:#f59e0b;padding:1px 6px;border-radius:4px;">' +
+          escapeHtml(t('apiKeys.multiplierBadge', formatNumber(item.tokenMultiplier || 1), formatNumber(item.creditMultiplier || 1))) + '</span>'
+        : '';
+      const actualLine = (multiplierOn || actualTokens !== (item.tokensUsed || 0) || actualCredits !== (item.creditsUsed || 0))
+        ? '<div class="text-xs muted-text">' + escapeHtml(t('apiKeys.actualUsage')) + ': ' +
+          escapeHtml(formatNumber(actualTokens)) + ' ' + escapeHtml(t('apiKeys.tokens').toLowerCase()) +
+          ' &middot; ' + escapeHtml(formatNumber(actualCredits)) + ' ' + escapeHtml(t('apiKeys.credits').toLowerCase()) + '</div>'
+        : '';
       const ipActive = escapeHtml(formatNumber(item.concurrentIps || 0))
         + (item.maxConcurrentIps ? ' / ' + escapeHtml(formatNumber(item.maxConcurrentIps)) : ' / ' + escapeHtml(t('apiKeys.unlimited')));
       const ipTotal = escapeHtml(formatNumber(item.totalIps || 0))
@@ -1978,6 +2007,7 @@
             migrated +
             disabled +
             expiredBadge +
+            multiplierBadge +
             '<span class="text-xs muted-text font-mono">' + masked + '</span>' +
           '</div>' +
           '<div class="flex items-center gap-2">' +
@@ -1995,6 +2025,7 @@
         '<div style="margin-top:0.5rem;display:grid;gap:0.35rem;">' +
           tokensLine +
           creditsLine +
+          actualLine +
           ipLine +
           requestsLine +
           rateLine +
@@ -2021,6 +2052,9 @@
     $('apiKeyForm_enabled').checked = entry ? !!entry.enabled : true;
     $('apiKeyForm_tokenLimit').value = entry ? String(entry.tokenLimit || 0) : '0';
     $('apiKeyForm_creditLimit').value = entry ? String(entry.creditLimit || 0) : '0';
+    $('apiKeyForm_billingMultiplierEnabled').checked = entry ? !!entry.billingMultiplierEnabled : false;
+    $('apiKeyForm_tokenMultiplier').value = entry ? String(itemMultiplier(entry.tokenMultiplier)) : '1';
+    $('apiKeyForm_creditMultiplier').value = entry ? String(itemMultiplier(entry.creditMultiplier)) : '1';
     $('apiKeyForm_expiresAt').value = (entry && entry.expiresAt) ? unixToLocalInput(normalizeUnixSeconds(entry.expiresAt)) : '';
     $('apiKeyForm_maxConcurrentIps').value = entry ? String(entry.maxConcurrentIps || 0) : '0';
     $('apiKeyForm_maxTotalIps').value = entry ? String(entry.maxTotalIps || 0) : '0';
@@ -2030,6 +2064,10 @@
     apiKeyModalSubmitting = false;
     $('apiKeyModalSaveBtn').disabled = false;
     openDialog('apiKeyModal');
+  }
+
+  function itemMultiplier(v) {
+    return multiplierValue(v || 1);
   }
 
   function closeApiKeyModal() {
@@ -2045,6 +2083,9 @@
     $('apiKeyBulk_enabled').checked = true;
     $('apiKeyBulk_tokenLimit').value = '0';
     $('apiKeyBulk_creditLimit').value = '0';
+    $('apiKeyBulk_billingMultiplierEnabled').checked = false;
+    $('apiKeyBulk_tokenMultiplier').value = '1';
+    $('apiKeyBulk_creditMultiplier').value = '1';
     $('apiKeyBulk_expiresAt').value = '';
     $('apiKeyBulk_rpmLimit').value = '0';
     $('apiKeyBulk_tpmLimit').value = '0';
@@ -2068,6 +2109,8 @@
       if (isNaN(count) || count < 1 || count > 100) throw new Error(t('apiKeys.bulkCountError'));
       const tokenLimit = parseInt($('apiKeyBulk_tokenLimit').value, 10);
       const creditLimit = parseFloat($('apiKeyBulk_creditLimit').value);
+      const tokenMultiplier = multiplierValue($('apiKeyBulk_tokenMultiplier').value);
+      const creditMultiplier = multiplierValue($('apiKeyBulk_creditMultiplier').value);
       const rpmLimit = parseInt($('apiKeyBulk_rpmLimit').value, 10);
       const tpmLimit = parseInt($('apiKeyBulk_tpmLimit').value, 10);
       const maxConcurrentIps = parseInt($('apiKeyBulk_maxConcurrentIps').value, 10);
@@ -2080,6 +2123,9 @@
         enabled: $('apiKeyBulk_enabled').checked,
         tokenLimit: isNaN(tokenLimit) || tokenLimit < 0 ? 0 : tokenLimit,
         creditLimit: isNaN(creditLimit) || creditLimit < 0 ? 0 : creditLimit,
+        billingMultiplierEnabled: $('apiKeyBulk_billingMultiplierEnabled').checked,
+        tokenMultiplier: tokenMultiplier,
+        creditMultiplier: creditMultiplier,
         expiresAt: localInputToUnix($('apiKeyBulk_expiresAt').value),
         rpmLimit: isNaN(rpmLimit) || rpmLimit < 0 ? 0 : rpmLimit,
         tpmLimit: isNaN(tpmLimit) || tpmLimit < 0 ? 0 : tpmLimit,
@@ -2131,6 +2177,8 @@
       const enabled = $('apiKeyForm_enabled').checked;
       const tokenLimit = parseInt($('apiKeyForm_tokenLimit').value, 10);
       const creditLimit = parseFloat($('apiKeyForm_creditLimit').value);
+      const tokenMultiplier = multiplierValue($('apiKeyForm_tokenMultiplier').value);
+      const creditMultiplier = multiplierValue($('apiKeyForm_creditMultiplier').value);
       const expiresAt = localInputToUnix($('apiKeyForm_expiresAt').value);
       const maxConcurrentIps = parseInt($('apiKeyForm_maxConcurrentIps').value, 10);
       const maxTotalIps = parseInt($('apiKeyForm_maxTotalIps').value, 10);
@@ -2143,6 +2191,9 @@
         enabled: enabled,
         tokenLimit: isNaN(tokenLimit) || tokenLimit < 0 ? 0 : tokenLimit,
         creditLimit: isNaN(creditLimit) || creditLimit < 0 ? 0 : creditLimit,
+        billingMultiplierEnabled: $('apiKeyForm_billingMultiplierEnabled').checked,
+        tokenMultiplier: tokenMultiplier,
+        creditMultiplier: creditMultiplier,
         expiresAt: expiresAt,
         maxConcurrentIps: isNaN(maxConcurrentIps) || maxConcurrentIps < 0 ? 0 : maxConcurrentIps,
         maxTotalIps: isNaN(maxTotalIps) || maxTotalIps < 0 ? 0 : maxTotalIps,
@@ -2243,9 +2294,9 @@
   }
 
   // Copies the self-service portal URL so the seller can hand it to a customer
-  // alongside their key. Prefers the configured public base URL, else this origin.
+  // alongside their key. Prefers the configured API base URL, else this origin.
   async function copyPortalLink() {
-    const base = (($('publicBaseURL') && $('publicBaseURL').value.trim()) || location.origin).replace(/\/+$/, '');
+    const base = (($('apiBaseURL') && $('apiBaseURL').value.trim()) || location.origin).replace(/\/+$/, '');
     try {
       await copyText(base + '/check');
       toast(t('apiKeys.portalLinkCopied'), 'success');
@@ -3416,7 +3467,8 @@
   }
   function buildApiKeyCsv(data) {
     const cols = ['id', 'name', 'keyMasked', 'enabled', 'requestsCount', 'tokensUsed',
-      'creditsUsed', 'tokenLimit', 'creditLimit', 'tokenPercentUsed', 'creditPercentUsed',
+      'creditsUsed', 'actualTokensUsed', 'actualCreditsUsed', 'billingMultiplierEnabled',
+      'tokenMultiplier', 'creditMultiplier', 'tokenLimit', 'creditLimit', 'tokenPercentUsed', 'creditPercentUsed',
       'overToken', 'overCredit', 'expired', 'expiresAt', 'createdAt', 'lastUsedAt'];
     const rows = [cols.join(',')];
     (data.apiKeys || []).forEach(k => {
@@ -3876,6 +3928,7 @@
     const summary = $('apiLogSummary');
     if (!body) return;
     const entries = filterApiLog(allEntries);
+    const showActual = $('apiLogActualToggle') ? $('apiLogActualToggle').checked : false;
     renderApiLogMetrics(entries);
     if (!entries.length) {
       body.innerHTML = '';
@@ -3887,9 +3940,21 @@
 
     let sumInput = 0, sumOutput = 0, sumCredits = 0, errorCount = 0;
     const rows = entries.map(e => {
-      sumInput += e.inputTokens || 0;
-      sumOutput += e.outputTokens || 0;
-      sumCredits += e.credits || 0;
+      const billedInput = e.inputTokens || 0;
+      const billedOutput = e.outputTokens || 0;
+      const billedTotal = e.totalTokens || (billedInput + billedOutput);
+      const billedCredits = e.credits || 0;
+      const actualInput = e.actualInputTokens != null ? e.actualInputTokens : billedInput;
+      const actualOutput = e.actualOutputTokens != null ? e.actualOutputTokens : billedOutput;
+      const actualTotal = e.actualTotalTokens != null ? e.actualTotalTokens : (actualInput + actualOutput || billedTotal);
+      const actualCredits = e.actualCredits != null ? e.actualCredits : billedCredits;
+      const viewInput = showActual ? actualInput : billedInput;
+      const viewOutput = showActual ? actualOutput : billedOutput;
+      const viewTotal = showActual ? actualTotal : billedTotal;
+      const viewCredits = showActual ? actualCredits : billedCredits;
+      sumInput += viewInput;
+      sumOutput += viewOutput;
+      sumCredits += viewCredits;
       const isError = e.status === 'error';
       if (isError) errorCount++;
       const keyLabel = e.apiKeyMasked
@@ -3914,9 +3979,9 @@
         '<td>' + keyLabel + '</td>' +
         '<td class="text-xs">' + escapeHtml(e.model || '') + '</td>' +
         '<td>' + (isError ? dash : accountLabel) + '</td>' +
-        '<td class="num text-xs"><span style="color:#22c55e;">&#9660; ' + numOrDash(e.inputTokens) + '</span> / <span style="color:#f59e0b;">&#9650; ' + numOrDash(e.outputTokens) + '</span></td>' +
-        '<td class="num">' + numOrDash(e.totalTokens) + '</td>' +
-        '<td class="num">' + numOrDash(e.credits) + '</td>' +
+        '<td class="num text-xs"><span style="color:#22c55e;">&#9660; ' + numOrDash(viewInput) + '</span> / <span style="color:#f59e0b;">&#9650; ' + numOrDash(viewOutput) + '</span></td>' +
+        '<td class="num">' + numOrDash(viewTotal) + '</td>' +
+        '<td class="num">' + numOrDash(viewCredits) + '</td>' +
         '<td class="num text-xs">' + durationCell + '</td>' +
         '<td>' + detailCell + '</td>' +
         '</tr>';
@@ -3930,6 +3995,7 @@
       summary.innerHTML =
         '<span class="apilog-chip">' + escapeHtml(t('apilog.totalRequests', entries.length)) + '</span>' +
         errChip +
+        '<span class="apilog-chip">' + escapeHtml(showActual ? t('apilog.modeActual') : t('apilog.modeBill')) + '</span>' +
         '<span class="apilog-chip">' + escapeHtml(t('apilog.totalTokens', formatNumber(sumInput + sumOutput))) + '</span>' +
         '<span class="apilog-chip">' + escapeHtml(t('apilog.totalCredits', formatNumber(sumCredits))) + '</span>';
     }
@@ -3950,7 +4016,7 @@
     if (!entries.length) { toast(t('logs.exportFailed'), 'error'); return; }
     let blob;
     if (format === 'csv') {
-      const cols = ['time', 'status', 'endpoint', 'apiKeyName', 'apiKeyMasked', 'model', 'accountEmail', 'inputTokens', 'outputTokens', 'totalTokens', 'credits', 'durationMs', 'statusCode', 'error'];
+      const cols = ['time', 'status', 'endpoint', 'apiKeyName', 'apiKeyMasked', 'model', 'accountEmail', 'inputTokens', 'outputTokens', 'totalTokens', 'credits', 'actualInputTokens', 'actualOutputTokens', 'actualTotalTokens', 'actualCredits', 'tokenMultiplier', 'creditMultiplier', 'durationMs', 'statusCode', 'error'];
       const esc = v => {
         const s = String(v == null ? '' : v);
         return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
@@ -4006,15 +4072,28 @@
     stopTabPolling();
     tabPollTimer = setInterval(fn, TAB_POLL_MS);
   }
+  function showSettingsSection(sectionId) {
+    const root = $('tabSettings');
+    if (!root) return;
+    const targetId = sectionId || 'settings-api';
+    qsa('.settings-card', root).forEach(card => card.classList.toggle('hidden', card.id !== targetId));
+    qsa('.settings-rail a', root).forEach(link => {
+      const active = link.getAttribute('href') === '#' + targetId;
+      link.classList.toggle('active', active);
+      link.setAttribute('aria-current', active ? 'page' : 'false');
+    });
+  }
   function switchTab(tab) {
     qsa('.tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
     qsa('.tab-content').forEach(c => c.classList.add('hidden'));
     $('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.remove('hidden');
+    const overviewStats = $('tabOverviewStats');
+    if (overviewStats) overviewStats.classList.toggle('hidden', tab !== 'accounts');
     if (tab === 'console') openConsole();
     else closeConsole();
     stopTabPolling();
     if (tab === 'apilog') { populateApiLogKeyFilter(); loadApiLog(); startTabPolling(loadApiLog); }
-    else if (tab === 'settings') { startTabPolling(refreshApiKeysIfIdle); }
+    else if (tab === 'settings') { showSettingsSection('settings-api'); startTabPolling(refreshApiKeysIfIdle); }
   }
 
   // refreshApiKeysIfIdle re-fetches API key usage while the settings tab is open,
@@ -4066,6 +4145,16 @@
     $('logoutBtn').addEventListener('click', logout);
 
     qsa('#tabBar .tab').forEach(tab => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
+    const settingsRail = document.querySelector('.settings-rail');
+    if (settingsRail) {
+      settingsRail.addEventListener('click', e => {
+        const link = e.target.closest('a[href^="#settings-"]');
+        if (!link) return;
+        e.preventDefault();
+        showSettingsSection(link.getAttribute('href').slice(1));
+      });
+      showSettingsSection('settings-api');
+    }
 
     const apiLogRefresh = $('apiLogRefreshBtn');
     if (apiLogRefresh) apiLogRefresh.addEventListener('click', loadApiLog);
@@ -4075,6 +4164,8 @@
     if (logsFilterSelect) logsFilterSelect.addEventListener('change', () => { apiLogFilter = logsFilterSelect.value; renderApiLog(apiLogCache); });
     const logsSearchInput = $('logsSearchInput');
     if (logsSearchInput) logsSearchInput.addEventListener('input', () => { apiLogSearch = logsSearchInput.value.trim(); renderApiLog(apiLogCache); });
+    const apiLogActualToggle = $('apiLogActualToggle');
+    if (apiLogActualToggle) apiLogActualToggle.addEventListener('change', () => renderApiLog(apiLogCache));
     const logsExportJsonBtn = $('logsExportJsonBtn');
     if (logsExportJsonBtn) logsExportJsonBtn.addEventListener('click', () => exportApiLog('json'));
     const logsExportCsvBtn = $('logsExportCsvBtn');
@@ -4149,6 +4240,8 @@
     $('saveProxyBtn').addEventListener('click', saveProxyConfig);
     const savePbu = $('savePublicBaseURLBtn');
     if (savePbu) savePbu.addEventListener('click', savePublicBaseURL);
+    const saveApiBase = $('saveApiBaseURLBtn');
+    if (saveApiBase) saveApiBase.addEventListener('click', saveApiBaseURL);
     const saveBrandingBtn = $('saveBrandingBtn');
     if (saveBrandingBtn) saveBrandingBtn.addEventListener('click', saveBranding);
     $('proxyImportBtn').addEventListener('click', importProxies);

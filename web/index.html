@@ -137,7 +137,7 @@
 
     <div class="container">
       <!-- Stats summary -->
-      <div class="stats-grid">
+      <div class="stats-grid" id="tabOverviewStats">
         <div class="stat-card">
           <div class="stat-card-title" data-i18n="stats.accounts"></div>
           <div class="stat-body">
@@ -239,9 +239,21 @@
 
       <!-- Settings tab -->
       <div id="tabSettings" class="tab-content hidden">
+        <aside class="settings-rail" aria-label="Settings sections">
+          <a href="#settings-api"><i class="fa-solid fa-key" aria-hidden="true"></i><span data-i18n="settings.apiSettings"></span></a>
+          <a href="#settings-usage"><i class="fa-solid fa-gauge-high" aria-hidden="true"></i><span data-i18n="settings.usageSettings"></span></a>
+          <a href="#settings-thinking"><i class="fa-solid fa-brain" aria-hidden="true"></i><span data-i18n="settings.thinkingSettings"></span></a>
+          <a href="#settings-endpoint"><i class="fa-solid fa-route" aria-hidden="true"></i><span data-i18n="settings.endpointSettings"></span></a>
+          <a href="#settings-security"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span data-i18n="settings.adminPassword"></span></a>
+          <a href="#settings-branding"><i class="fa-solid fa-palette" aria-hidden="true"></i><span data-i18n="settings.branding"></span></a>
+          <a href="#settings-proxy"><i class="fa-solid fa-network-wired" aria-hidden="true"></i><span data-i18n="settings.proxySettings"></span></a>
+          <a href="#settings-filter"><i class="fa-solid fa-filter" aria-hidden="true"></i><span data-i18n="settings.promptFilter"></span></a>
+          <a href="#settings-stats"><i class="fa-solid fa-rotate-left" aria-hidden="true"></i><span data-i18n="settings.statistics"></span></a>
+        </aside>
+        <div class="settings-stack">
         <!-- API settings -->
-        <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="settings.apiSettings"></span></div>
+        <div class="card settings-card settings-card-wide settings-card-api" id="settings-api">
+          <div class="card-header settings-card-header"><span class="card-title settings-card-title"><i class="fa-solid fa-key" aria-hidden="true"></i><span data-i18n="settings.apiSettings"></span></span></div>
           <div class="form-group">
             <label class="flex items-center gap-2">
               <span class="switch"><input type="checkbox" id="requireApiKey" /><span class="slider"></span></span>
@@ -284,8 +296,8 @@
         </div>
 
         <!-- Usage settings -->
-        <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="settings.usageSettings"></span></div>
+        <div class="card settings-card settings-card-compact settings-card-usage" id="settings-usage">
+          <div class="card-header settings-card-header"><span class="card-title settings-card-title"><i class="fa-solid fa-gauge-high" aria-hidden="true"></i><span data-i18n="settings.usageSettings"></span></span></div>
           <div class="form-group">
             <label class="flex items-center gap-2">
               <span class="switch"><input type="checkbox" id="allowOverUsage" /><span class="slider"></span></span>
@@ -317,8 +329,8 @@
         </div>
 
         <!-- Thinking settings -->
-        <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="settings.thinkingSettings"></span></div>
+        <div class="card settings-card settings-card-compact settings-card-thinking" id="settings-thinking">
+          <div class="card-header settings-card-header"><span class="card-title settings-card-title"><i class="fa-solid fa-brain" aria-hidden="true"></i><span data-i18n="settings.thinkingSettings"></span></span></div>
           <div class="form-group">
             <label data-i18n="settings.thinkingSuffix"></label>
             <input type="text" id="thinkingSuffix" placeholder="-thinking" />
@@ -343,8 +355,8 @@
         </div>
 
         <!-- Endpoint settings -->
-        <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="settings.endpointSettings"></span></div>
+        <div class="card settings-card settings-card-compact settings-card-endpoint" id="settings-endpoint">
+          <div class="card-header settings-card-header"><span class="card-title settings-card-title"><i class="fa-solid fa-route" aria-hidden="true"></i><span data-i18n="settings.endpointSettings"></span></span></div>
           <div class="form-group">
             <label data-i18n="settings.preferredEndpoint"></label>
             <select id="preferredEndpoint">
@@ -367,8 +379,8 @@
         </div>
 
         <!-- Admin password -->
-        <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="settings.adminPassword"></span></div>
+        <div class="card settings-card settings-card-side settings-card-security" id="settings-security">
+          <div class="card-header settings-card-header"><span class="card-title settings-card-title"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span data-i18n="settings.adminPassword"></span></span></div>
           <div class="form-group">
             <label data-i18n="settings.newPassword"></label>
             <input type="password" id="newPassword" data-i18n-placeholder="settings.newPasswordPlaceholder" />
@@ -376,8 +388,8 @@
           <button class="btn btn-primary" id="changePasswordBtn" data-i18n="settings.changePassword"></button>
         </div>
 
-        <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="settings.branding"></span></div>
+        <div class="card settings-card settings-card-side settings-card-branding" id="settings-branding">
+          <div class="card-header settings-card-header"><span class="card-title settings-card-title"><i class="fa-solid fa-palette" aria-hidden="true"></i><span data-i18n="settings.branding"></span></span></div>
           <div class="form-group">
             <label data-i18n="settings.siteName"></label>
             <input type="text" id="siteName" placeholder="Kiro-Go" autocomplete="off" />
@@ -398,14 +410,21 @@
         </div>
 
         <!-- Proxy (pool + import + fallback, merged) -->
-        <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="settings.proxySettings"></span></div>
+        <div class="card settings-card settings-card-wide settings-card-proxy" id="settings-proxy">
+          <div class="card-header settings-card-header"><span class="card-title settings-card-title"><i class="fa-solid fa-network-wired" aria-hidden="true"></i><span data-i18n="settings.proxySettings"></span></span></div>
           <div class="form-group">
             <label data-i18n="settings.publicBaseURL"></label>
             <input type="text" id="publicBaseURL" placeholder="https://azr.hian.software" autocomplete="off" />
             <small data-i18n="settings.publicBaseURLHint"></small>
             <button class="btn btn-primary btn-sm" id="savePublicBaseURLBtn" style="margin-top:0.5rem;"
               data-i18n="settings.savePublicBaseURL"></button>
+          </div>
+          <div class="form-group">
+            <label data-i18n="settings.apiBaseURL"></label>
+            <input type="text" id="apiBaseURL" placeholder="https://api.example.com" autocomplete="off" />
+            <small data-i18n="settings.apiBaseURLHint"></small>
+            <button class="btn btn-primary btn-sm" id="saveApiBaseURLBtn" style="margin-top:0.5rem;"
+              data-i18n="settings.saveApiBaseURL"></button>
           </div>
 
           <label class="flex items-center gap-2" style="margin-top:0.25rem;">
@@ -474,8 +493,8 @@
         </div>
 
         <!-- Prompt filter -->
-        <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="settings.promptFilter"></span></div>
+        <div class="card settings-card settings-card-wide settings-card-filter" id="settings-filter">
+          <div class="card-header settings-card-header"><span class="card-title settings-card-title"><i class="fa-solid fa-filter" aria-hidden="true"></i><span data-i18n="settings.promptFilter"></span></span></div>
           <div class="form-group">
             <label class="font-semibold pb-2 block" data-i18n="settings.builtinFilters"></label>
             <div class="flex flex-col gap-3">
@@ -518,9 +537,10 @@
         </div>
 
         <!-- Statistics reset -->
-        <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="settings.statistics"></span></div>
+        <div class="card settings-card settings-card-side settings-card-danger settings-card-stats" id="settings-stats">
+          <div class="card-header settings-card-header"><span class="card-title settings-card-title"><i class="fa-solid fa-rotate-left" aria-hidden="true"></i><span data-i18n="settings.statistics"></span></span></div>
           <button class="btn btn-danger" id="resetStatsBtn" data-i18n="settings.resetStats"></button>
+        </div>
         </div>
       </div>
 
@@ -616,6 +636,7 @@
                 <option value="error" data-i18n="logs.filterError"></option>
               </select>
               <input id="logsSearchInput" class="logs-search" type="search" data-i18n-placeholder="logs.search" />
+              <label class="logs-auto-toggle"><input type="checkbox" id="apiLogActualToggle" /> <span data-i18n="apilog.showActual"></span></label>
               <button class="btn btn-outline btn-sm" id="logsExportJsonBtn" type="button"><i class="fa-solid fa-file-code" aria-hidden="true"></i><span class="btn-text" data-i18n="logs.exportJson"></span></button>
               <button class="btn btn-outline btn-sm" id="logsExportCsvBtn" type="button"><i class="fa-solid fa-file-csv" aria-hidden="true"></i><span class="btn-text" data-i18n="logs.exportCsv"></span></button>
               <button class="btn btn-outline btn-sm" id="apiLogRefreshBtn" type="button"><i
@@ -839,6 +860,23 @@
           <small data-i18n="apiKeys.limitHint"></small>
         </div>
         <div class="form-group">
+          <label class="flex items-center gap-2">
+            <span class="switch"><input type="checkbox" id="apiKeyForm_billingMultiplierEnabled" /><span class="slider"></span></span>
+            <span data-i18n="apiKeys.billingMultiplier"></span>
+          </label>
+          <small data-i18n="apiKeys.billingMultiplierHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.tokenMultiplier"></label>
+          <input type="number" id="apiKeyForm_tokenMultiplier" min="1" step="0.01" value="1" />
+          <small data-i18n="apiKeys.multiplierHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.creditMultiplier"></label>
+          <input type="number" id="apiKeyForm_creditMultiplier" min="1" step="0.01" value="1" />
+          <small data-i18n="apiKeys.multiplierHint"></small>
+        </div>
+        <div class="form-group">
           <label data-i18n="apiKeys.rpmLimit"></label>
           <input type="number" id="apiKeyForm_rpmLimit" min="0" step="1" value="0" />
           <small data-i18n="apiKeys.rateLimitHint"></small>
@@ -907,6 +945,23 @@
           <label data-i18n="apiKeys.limitCredits"></label>
           <input type="number" id="apiKeyBulk_creditLimit" min="0" step="0.01" value="0" />
           <small data-i18n="apiKeys.limitHint"></small>
+        </div>
+        <div class="form-group">
+          <label class="flex items-center gap-2">
+            <span class="switch"><input type="checkbox" id="apiKeyBulk_billingMultiplierEnabled" /><span class="slider"></span></span>
+            <span data-i18n="apiKeys.billingMultiplier"></span>
+          </label>
+          <small data-i18n="apiKeys.billingMultiplierHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.tokenMultiplier"></label>
+          <input type="number" id="apiKeyBulk_tokenMultiplier" min="1" step="0.01" value="1" />
+          <small data-i18n="apiKeys.multiplierHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.creditMultiplier"></label>
+          <input type="number" id="apiKeyBulk_creditMultiplier" min="1" step="0.01" value="1" />
+          <small data-i18n="apiKeys.multiplierHint"></small>
         </div>
         <div class="form-group">
           <label data-i18n="apiKeys.expiresAt"></label>

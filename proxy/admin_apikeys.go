@@ -10,22 +10,41 @@ import (
 	"time"
 )
 
+func actualTokensUsed(e config.ApiKeyEntry) int64 {
+	if e.ActualTokensUsed > 0 {
+		return e.ActualTokensUsed
+	}
+	return e.TokensUsed
+}
+
+func actualCreditsUsed(e config.ApiKeyEntry) float64 {
+	if e.ActualCreditsUsed > 0 {
+		return e.ActualCreditsUsed
+	}
+	return e.CreditsUsed
+}
+
 // apiKeyView is the response payload for listing/inspecting API keys. The Key field
 // is masked so admins can identify entries without exposing the secret.
 type apiKeyView struct {
-	ID            string  `json:"id"`
-	Name          string  `json:"name,omitempty"`
-	KeyMasked     string  `json:"keyMasked"`
-	Enabled       bool    `json:"enabled"`
-	Migrated      bool    `json:"migrated,omitempty"`
-	CreatedAt     int64   `json:"createdAt"`
-	LastUsedAt    int64   `json:"lastUsedAt,omitempty"`
-	ExpiresAt     int64   `json:"expiresAt,omitempty"`
-	TokenLimit    int64   `json:"tokenLimit,omitempty"`
-	CreditLimit   float64 `json:"creditLimit,omitempty"`
-	TokensUsed    int64   `json:"tokensUsed"`
-	CreditsUsed   float64 `json:"creditsUsed"`
-	RequestsCount int64   `json:"requestsCount"`
+	ID                       string  `json:"id"`
+	Name                     string  `json:"name,omitempty"`
+	KeyMasked                string  `json:"keyMasked"`
+	Enabled                  bool    `json:"enabled"`
+	Migrated                 bool    `json:"migrated,omitempty"`
+	CreatedAt                int64   `json:"createdAt"`
+	LastUsedAt               int64   `json:"lastUsedAt,omitempty"`
+	ExpiresAt                int64   `json:"expiresAt,omitempty"`
+	TokenLimit               int64   `json:"tokenLimit,omitempty"`
+	CreditLimit              float64 `json:"creditLimit,omitempty"`
+	TokensUsed               int64   `json:"tokensUsed"`
+	CreditsUsed              float64 `json:"creditsUsed"`
+	ActualTokensUsed         int64   `json:"actualTokensUsed"`
+	ActualCreditsUsed        float64 `json:"actualCreditsUsed"`
+	RequestsCount            int64   `json:"requestsCount"`
+	BillingMultiplierEnabled bool    `json:"billingMultiplierEnabled,omitempty"`
+	TokenMultiplier          float64 `json:"tokenMultiplier"`
+	CreditMultiplier         float64 `json:"creditMultiplier"`
 
 	MaxConcurrentIPs int      `json:"maxConcurrentIps,omitempty"`
 	MaxTotalIPs      int      `json:"maxTotalIps,omitempty"`
@@ -40,26 +59,31 @@ type apiKeyView struct {
 func toApiKeyView(e config.ApiKeyEntry) apiKeyView {
 	conc, total := config.ApiKeyIPStats(e, ipActiveWindow)
 	return apiKeyView{
-		ID:               e.ID,
-		Name:             e.Name,
-		KeyMasked:        config.MaskApiKey(e.Key),
-		Enabled:          e.Enabled,
-		Migrated:         e.Migrated,
-		CreatedAt:        e.CreatedAt,
-		LastUsedAt:       e.LastUsedAt,
-		ExpiresAt:        e.ExpiresAt,
-		TokenLimit:       e.TokenLimit,
-		CreditLimit:      e.CreditLimit,
-		TokensUsed:       e.TokensUsed,
-		CreditsUsed:      e.CreditsUsed,
-		RequestsCount:    e.RequestsCount,
-		MaxConcurrentIPs: e.MaxConcurrentIPs,
-		MaxTotalIPs:      e.MaxTotalIPs,
-		IPAllowlist:      e.IPAllowlist,
-		ConcurrentIPs:    conc,
-		TotalIPs:         total,
-		RPMLimit:         e.RPMLimit,
-		TPMLimit:         e.TPMLimit,
+		ID:                       e.ID,
+		Name:                     e.Name,
+		KeyMasked:                config.MaskApiKey(e.Key),
+		Enabled:                  e.Enabled,
+		Migrated:                 e.Migrated,
+		CreatedAt:                e.CreatedAt,
+		LastUsedAt:               e.LastUsedAt,
+		ExpiresAt:                e.ExpiresAt,
+		TokenLimit:               e.TokenLimit,
+		CreditLimit:              e.CreditLimit,
+		TokensUsed:               e.TokensUsed,
+		CreditsUsed:              e.CreditsUsed,
+		ActualTokensUsed:         actualTokensUsed(e),
+		ActualCreditsUsed:        actualCreditsUsed(e),
+		RequestsCount:            e.RequestsCount,
+		BillingMultiplierEnabled: e.BillingMultiplierEnabled,
+		TokenMultiplier:          config.EffectiveTokenMultiplier(e),
+		CreditMultiplier:         config.EffectiveCreditMultiplier(e),
+		MaxConcurrentIPs:         e.MaxConcurrentIPs,
+		MaxTotalIPs:              e.MaxTotalIPs,
+		IPAllowlist:              e.IPAllowlist,
+		ConcurrentIPs:            conc,
+		TotalIPs:                 total,
+		RPMLimit:                 e.RPMLimit,
+		TPMLimit:                 e.TPMLimit,
 	}
 }
 
@@ -83,14 +107,17 @@ func (h *Handler) apiGetApiKey(w http.ResponseWriter, r *http.Request, id string
 }
 
 type apiKeyCreateRequest struct {
-	Name        string  `json:"name,omitempty"`
-	Key         string  `json:"key,omitempty"`
-	Enabled     *bool   `json:"enabled,omitempty"`
-	TokenLimit  int64   `json:"tokenLimit,omitempty"`
-	CreditLimit float64 `json:"creditLimit,omitempty"`
-	ExpiresAt   int64   `json:"expiresAt,omitempty"`
-	RPMLimit    int     `json:"rpmLimit,omitempty"`
-	TPMLimit    int64   `json:"tpmLimit,omitempty"`
+	Name                     string  `json:"name,omitempty"`
+	Key                      string  `json:"key,omitempty"`
+	Enabled                  *bool   `json:"enabled,omitempty"`
+	TokenLimit               int64   `json:"tokenLimit,omitempty"`
+	CreditLimit              float64 `json:"creditLimit,omitempty"`
+	ExpiresAt                int64   `json:"expiresAt,omitempty"`
+	RPMLimit                 int     `json:"rpmLimit,omitempty"`
+	TPMLimit                 int64   `json:"tpmLimit,omitempty"`
+	BillingMultiplierEnabled bool    `json:"billingMultiplierEnabled,omitempty"`
+	TokenMultiplier          float64 `json:"tokenMultiplier,omitempty"`
+	CreditMultiplier         float64 `json:"creditMultiplier,omitempty"`
 }
 
 func (h *Handler) apiCreateApiKey(w http.ResponseWriter, r *http.Request) {
@@ -129,14 +156,17 @@ func createApiKeyFromRequest(req apiKeyCreateRequest) (config.ApiKeyEntry, error
 	}
 
 	return config.AddApiKey(config.ApiKeyEntry{
-		Name:        req.Name,
-		Key:         keyValue,
-		Enabled:     enabled,
-		TokenLimit:  req.TokenLimit,
-		CreditLimit: req.CreditLimit,
-		ExpiresAt:   req.ExpiresAt,
-		RPMLimit:    req.RPMLimit,
-		TPMLimit:    req.TPMLimit,
+		Name:                     req.Name,
+		Key:                      keyValue,
+		Enabled:                  enabled,
+		TokenLimit:               req.TokenLimit,
+		CreditLimit:              req.CreditLimit,
+		ExpiresAt:                req.ExpiresAt,
+		RPMLimit:                 req.RPMLimit,
+		TPMLimit:                 req.TPMLimit,
+		BillingMultiplierEnabled: req.BillingMultiplierEnabled,
+		TokenMultiplier:          req.TokenMultiplier,
+		CreditMultiplier:         req.CreditMultiplier,
 	})
 }
 
@@ -148,11 +178,14 @@ type apiKeyBulkCreateRequest struct {
 	CreditLimit float64 `json:"creditLimit,omitempty"`
 	ExpiresAt   int64   `json:"expiresAt,omitempty"`
 
-	MaxConcurrentIPs int      `json:"maxConcurrentIps,omitempty"`
-	MaxTotalIPs      int      `json:"maxTotalIps,omitempty"`
-	IPAllowlist      []string `json:"ipAllowlist,omitempty"`
-	RPMLimit         int      `json:"rpmLimit,omitempty"`
-	TPMLimit         int64    `json:"tpmLimit,omitempty"`
+	MaxConcurrentIPs         int      `json:"maxConcurrentIps,omitempty"`
+	MaxTotalIPs              int      `json:"maxTotalIps,omitempty"`
+	IPAllowlist              []string `json:"ipAllowlist,omitempty"`
+	RPMLimit                 int      `json:"rpmLimit,omitempty"`
+	TPMLimit                 int64    `json:"tpmLimit,omitempty"`
+	BillingMultiplierEnabled bool     `json:"billingMultiplierEnabled,omitempty"`
+	TokenMultiplier          float64  `json:"tokenMultiplier,omitempty"`
+	CreditMultiplier         float64  `json:"creditMultiplier,omitempty"`
 }
 
 func (h *Handler) apiBulkCreateApiKeys(w http.ResponseWriter, r *http.Request) {
@@ -180,17 +213,20 @@ func (h *Handler) apiBulkCreateApiKeys(w http.ResponseWriter, r *http.Request) {
 	entries := make([]config.ApiKeyEntry, req.Count)
 	for i := range entries {
 		entries[i] = config.ApiKeyEntry{
-			Name:             prefix + " " + strconv.Itoa(i+1),
-			Key:              config.GenerateApiKeyValue(),
-			Enabled:          enabled,
-			TokenLimit:       req.TokenLimit,
-			CreditLimit:      req.CreditLimit,
-			ExpiresAt:        req.ExpiresAt,
-			MaxConcurrentIPs: req.MaxConcurrentIPs,
-			MaxTotalIPs:      req.MaxTotalIPs,
-			IPAllowlist:      req.IPAllowlist,
-			RPMLimit:         req.RPMLimit,
-			TPMLimit:         req.TPMLimit,
+			Name:                     prefix + " " + strconv.Itoa(i+1),
+			Key:                      config.GenerateApiKeyValue(),
+			Enabled:                  enabled,
+			TokenLimit:               req.TokenLimit,
+			CreditLimit:              req.CreditLimit,
+			ExpiresAt:                req.ExpiresAt,
+			MaxConcurrentIPs:         req.MaxConcurrentIPs,
+			MaxTotalIPs:              req.MaxTotalIPs,
+			IPAllowlist:              req.IPAllowlist,
+			RPMLimit:                 req.RPMLimit,
+			TPMLimit:                 req.TPMLimit,
+			BillingMultiplierEnabled: req.BillingMultiplierEnabled,
+			TokenMultiplier:          req.TokenMultiplier,
+			CreditMultiplier:         req.CreditMultiplier,
 		}
 	}
 	created, err := config.AddApiKeys(entries)
@@ -246,8 +282,11 @@ type apiKeyUpdateRequest struct {
 	MaxTotalIPs      *int      `json:"maxTotalIps,omitempty"`
 	IPAllowlist      *[]string `json:"ipAllowlist,omitempty"`
 
-	RPMLimit *int   `json:"rpmLimit,omitempty"`
-	TPMLimit *int64 `json:"tpmLimit,omitempty"`
+	RPMLimit                 *int     `json:"rpmLimit,omitempty"`
+	TPMLimit                 *int64   `json:"tpmLimit,omitempty"`
+	BillingMultiplierEnabled *bool    `json:"billingMultiplierEnabled,omitempty"`
+	TokenMultiplier          *float64 `json:"tokenMultiplier,omitempty"`
+	CreditMultiplier         *float64 `json:"creditMultiplier,omitempty"`
 }
 
 func (h *Handler) apiUpdateApiKey(w http.ResponseWriter, r *http.Request, id string) {
@@ -299,6 +338,15 @@ func (h *Handler) apiUpdateApiKey(w http.ResponseWriter, r *http.Request, id str
 	if req.TPMLimit != nil {
 		patch.TPMLimit = *req.TPMLimit
 	}
+	if req.BillingMultiplierEnabled != nil {
+		patch.BillingMultiplierEnabled = *req.BillingMultiplierEnabled
+	}
+	if req.TokenMultiplier != nil {
+		patch.TokenMultiplier = *req.TokenMultiplier
+	}
+	if req.CreditMultiplier != nil {
+		patch.CreditMultiplier = *req.CreditMultiplier
+	}
 
 	if err := config.UpdateApiKey(id, patch); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -322,24 +370,29 @@ func (h *Handler) apiUpdateApiKey(w http.ResponseWriter, r *http.Request, id str
 // with server-computed derived columns so the frontend renders both JSON and CSV
 // from one source. Never contains the raw key value.
 type apiKeyExportView struct {
-	ID                string  `json:"id"`
-	Name              string  `json:"name,omitempty"`
-	KeyMasked         string  `json:"keyMasked"`
-	Key               string  `json:"key,omitempty"` // Raw value, only populated when export is called with includeSecret=true.
-	Enabled           bool    `json:"enabled"`
-	RequestsCount     int64   `json:"requestsCount"`
-	TokensUsed        int64   `json:"tokensUsed"`
-	CreditsUsed       float64 `json:"creditsUsed"`
-	TokenLimit        int64   `json:"tokenLimit"`
-	CreditLimit       float64 `json:"creditLimit"`
-	ExpiresAt         int64   `json:"expiresAt"`
-	CreatedAt         int64   `json:"createdAt"`
-	LastUsedAt        int64   `json:"lastUsedAt"`
-	TokenPercentUsed  float64 `json:"tokenPercentUsed"`
-	CreditPercentUsed float64 `json:"creditPercentUsed"`
-	OverToken         bool    `json:"overToken"`
-	OverCredit        bool    `json:"overCredit"`
-	Expired           bool    `json:"expired"`
+	ID                       string  `json:"id"`
+	Name                     string  `json:"name,omitempty"`
+	KeyMasked                string  `json:"keyMasked"`
+	Key                      string  `json:"key,omitempty"` // Raw value, only populated when export is called with includeSecret=true.
+	Enabled                  bool    `json:"enabled"`
+	RequestsCount            int64   `json:"requestsCount"`
+	TokensUsed               int64   `json:"tokensUsed"`
+	CreditsUsed              float64 `json:"creditsUsed"`
+	ActualTokensUsed         int64   `json:"actualTokensUsed"`
+	ActualCreditsUsed        float64 `json:"actualCreditsUsed"`
+	TokenLimit               int64   `json:"tokenLimit"`
+	CreditLimit              float64 `json:"creditLimit"`
+	BillingMultiplierEnabled bool    `json:"billingMultiplierEnabled"`
+	TokenMultiplier          float64 `json:"tokenMultiplier"`
+	CreditMultiplier         float64 `json:"creditMultiplier"`
+	ExpiresAt                int64   `json:"expiresAt"`
+	CreatedAt                int64   `json:"createdAt"`
+	LastUsedAt               int64   `json:"lastUsedAt"`
+	TokenPercentUsed         float64 `json:"tokenPercentUsed"`
+	CreditPercentUsed        float64 `json:"creditPercentUsed"`
+	OverToken                bool    `json:"overToken"`
+	OverCredit               bool    `json:"overCredit"`
+	Expired                  bool    `json:"expired"`
 }
 
 func toApiKeyExportView(e config.ApiKeyEntry, includeSecret bool) apiKeyExportView {
@@ -357,24 +410,29 @@ func toApiKeyExportView(e config.ApiKeyEntry, includeSecret bool) apiKeyExportVi
 		rawKey = e.Key
 	}
 	return apiKeyExportView{
-		ID:                e.ID,
-		Name:              e.Name,
-		KeyMasked:         config.MaskApiKey(e.Key),
-		Key:               rawKey,
-		Enabled:           e.Enabled,
-		RequestsCount:     e.RequestsCount,
-		TokensUsed:        e.TokensUsed,
-		CreditsUsed:       e.CreditsUsed,
-		TokenLimit:        e.TokenLimit,
-		CreditLimit:       e.CreditLimit,
-		ExpiresAt:         e.ExpiresAt,
-		CreatedAt:         e.CreatedAt,
-		LastUsedAt:        e.LastUsedAt,
-		TokenPercentUsed:  tokenPct,
-		CreditPercentUsed: creditPct,
-		OverToken:         overToken,
-		OverCredit:        overCredit,
-		Expired:           config.ApiKeyExpired(e),
+		ID:                       e.ID,
+		Name:                     e.Name,
+		KeyMasked:                config.MaskApiKey(e.Key),
+		Key:                      rawKey,
+		Enabled:                  e.Enabled,
+		RequestsCount:            e.RequestsCount,
+		TokensUsed:               e.TokensUsed,
+		CreditsUsed:              e.CreditsUsed,
+		ActualTokensUsed:         actualTokensUsed(e),
+		ActualCreditsUsed:        actualCreditsUsed(e),
+		TokenLimit:               e.TokenLimit,
+		CreditLimit:              e.CreditLimit,
+		BillingMultiplierEnabled: e.BillingMultiplierEnabled,
+		TokenMultiplier:          config.EffectiveTokenMultiplier(e),
+		CreditMultiplier:         config.EffectiveCreditMultiplier(e),
+		ExpiresAt:                e.ExpiresAt,
+		CreatedAt:                e.CreatedAt,
+		LastUsedAt:               e.LastUsedAt,
+		TokenPercentUsed:         tokenPct,
+		CreditPercentUsed:        creditPct,
+		OverToken:                overToken,
+		OverCredit:               overCredit,
+		Expired:                  config.ApiKeyExpired(e),
 	}
 }
 
@@ -422,15 +480,20 @@ func (h *Handler) apiExportApiKeys(w http.ResponseWriter, r *http.Request) {
 // apiKeyImportEntry is one key in an import payload. It mirrors the export
 // shape; only Key is required (masked-only exports cannot be re-imported).
 type apiKeyImportEntry struct {
-	Name          string  `json:"name,omitempty"`
-	Key           string  `json:"key"`
-	Enabled       *bool   `json:"enabled,omitempty"`
-	TokenLimit    int64   `json:"tokenLimit,omitempty"`
-	CreditLimit   float64 `json:"creditLimit,omitempty"`
-	ExpiresAt     int64   `json:"expiresAt,omitempty"`
-	TokensUsed    int64   `json:"tokensUsed,omitempty"`
-	CreditsUsed   float64 `json:"creditsUsed,omitempty"`
-	RequestsCount int64   `json:"requestsCount,omitempty"`
+	Name                     string  `json:"name,omitempty"`
+	Key                      string  `json:"key"`
+	Enabled                  *bool   `json:"enabled,omitempty"`
+	TokenLimit               int64   `json:"tokenLimit,omitempty"`
+	CreditLimit              float64 `json:"creditLimit,omitempty"`
+	ExpiresAt                int64   `json:"expiresAt,omitempty"`
+	TokensUsed               int64   `json:"tokensUsed,omitempty"`
+	CreditsUsed              float64 `json:"creditsUsed,omitempty"`
+	ActualTokensUsed         int64   `json:"actualTokensUsed,omitempty"`
+	ActualCreditsUsed        float64 `json:"actualCreditsUsed,omitempty"`
+	RequestsCount            int64   `json:"requestsCount,omitempty"`
+	BillingMultiplierEnabled bool    `json:"billingMultiplierEnabled,omitempty"`
+	TokenMultiplier          float64 `json:"tokenMultiplier,omitempty"`
+	CreditMultiplier         float64 `json:"creditMultiplier,omitempty"`
 }
 
 // apiImportApiKeysAdmin handles POST /admin/api/api-keys/import. It restores keys
@@ -483,15 +546,20 @@ func (h *Handler) apiImportApiKeysAdmin(w http.ResponseWriter, r *http.Request) 
 			enabled = *it.Enabled
 		}
 		if _, err := config.AddApiKey(config.ApiKeyEntry{
-			Name:          it.Name,
-			Key:           key,
-			Enabled:       enabled,
-			TokenLimit:    it.TokenLimit,
-			CreditLimit:   it.CreditLimit,
-			ExpiresAt:     it.ExpiresAt,
-			TokensUsed:    it.TokensUsed,
-			CreditsUsed:   it.CreditsUsed,
-			RequestsCount: it.RequestsCount,
+			Name:                     it.Name,
+			Key:                      key,
+			Enabled:                  enabled,
+			TokenLimit:               it.TokenLimit,
+			CreditLimit:              it.CreditLimit,
+			ExpiresAt:                it.ExpiresAt,
+			TokensUsed:               it.TokensUsed,
+			CreditsUsed:              it.CreditsUsed,
+			ActualTokensUsed:         it.ActualTokensUsed,
+			ActualCreditsUsed:        it.ActualCreditsUsed,
+			RequestsCount:            it.RequestsCount,
+			BillingMultiplierEnabled: it.BillingMultiplierEnabled,
+			TokenMultiplier:          it.TokenMultiplier,
+			CreditMultiplier:         it.CreditMultiplier,
 		}); err != nil {
 			skipped++
 			continue

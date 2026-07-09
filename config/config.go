@@ -213,6 +213,17 @@ type ApiKeyEntry struct {
 	CreditsUsed   float64 `json:"creditsUsed,omitempty"`
 	RequestsCount int64   `json:"requestsCount,omitempty"`
 
+	// Actual upstream usage for admin reconciliation. TokensUsed/CreditsUsed are
+	// the customer-facing billed counters after any multiplier is applied.
+	ActualTokensUsed  int64   `json:"actualTokensUsed,omitempty"`
+	ActualCreditsUsed float64 `json:"actualCreditsUsed,omitempty"`
+
+	// Optional per-key billing multiplier. When disabled, both effective
+	// multipliers are 1.0 and billed usage equals actual usage.
+	BillingMultiplierEnabled bool    `json:"billingMultiplierEnabled,omitempty"`
+	TokenMultiplier          float64 `json:"tokenMultiplier,omitempty"`
+	CreditMultiplier         float64 `json:"creditMultiplier,omitempty"`
+
 	// IP limits (0 = unlimited)
 	MaxConcurrentIPs int      `json:"maxConcurrentIps,omitempty"`
 	MaxTotalIPs      int      `json:"maxTotalIps,omitempty"`
@@ -311,6 +322,12 @@ type Config struct {
 	// It must point at the loopback port, NOT the admin UI port. Empty = fall back to
 	// http://localhost:<loopbackPort> (correct for the pure-local case).
 	PublicBaseURL string `json:"publicBaseURL,omitempty"`
+
+	// APIBaseURL is the externally reachable API base URL shown to customers in
+	// the self-service key check portal. This is intentionally separate from
+	// PublicBaseURL, which is reserved for SSO redirect_uri construction.
+	// Empty = derive from the incoming check request host.
+	APIBaseURL string `json:"apiBaseURL,omitempty"`
 
 	// Branding / custom messaging (empty = built-in default; see Default* consts)
 	SiteName       string `json:"siteName,omitempty"`       // replaces "Kiro-Go" in UI/portal
@@ -1282,6 +1299,25 @@ func UpdatePublicBaseURL(u string) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.PublicBaseURL = strings.TrimRight(strings.TrimSpace(u), "/")
+	return Save()
+}
+
+// GetAPIBaseURL returns the configured customer-facing API base URL
+// (no trailing slash), or "" when unset.
+func GetAPIBaseURL() string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return ""
+	}
+	return strings.TrimRight(cfg.APIBaseURL, "/")
+}
+
+// UpdateAPIBaseURL sets the customer-facing API base URL and persists the change.
+func UpdateAPIBaseURL(u string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.APIBaseURL = strings.TrimRight(strings.TrimSpace(u), "/")
 	return Save()
 }
 

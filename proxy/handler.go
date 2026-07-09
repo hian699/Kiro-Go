@@ -1427,13 +1427,25 @@ func (h *Handler) recordSuccess(inputTokens, outputTokens int, credits float64) 
 func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTokens int, credits float64, model string, account *config.Account, endpoint string, startedAt time.Time, reqIP string) {
 	h.recordSuccess(inputTokens, outputTokens, credits)
 
-	keyName, keyMasked := apiKeyLabels(apiKeyID)
+	keyName, keyMasked := "", ""
+	billedInputTokens := inputTokens
+	billedOutputTokens := outputTokens
+	billedCredits := credits
+	tokenMultiplier := 1.0
+	creditMultiplier := 1.0
 	if apiKeyID != "" {
-		if err := config.RecordApiKeyUsage(apiKeyID, int64(inputTokens+outputTokens), credits); err != nil {
+		if entry := config.GetApiKeyEntry(apiKeyID); entry != nil {
+			keyName = entry.Name
+			keyMasked = config.MaskApiKey(entry.Key)
+			tokenMultiplier = config.EffectiveTokenMultiplier(*entry)
+			creditMultiplier = config.EffectiveCreditMultiplier(*entry)
+			billedInputTokens, billedOutputTokens, billedCredits = config.ApplyBillingMultiplier(*entry, inputTokens, outputTokens, credits)
+		}
+		if err := config.RecordApiKeyUsageDetailed(apiKeyID, int64(billedInputTokens+billedOutputTokens), billedCredits, int64(inputTokens+outputTokens), credits); err != nil {
 			logger.Warnf("[ApiKey] failed to record usage for key %s: %v", apiKeyID, err)
 		}
 		if h.rateLimiter != nil {
-			h.rateLimiter.AddTokens(apiKeyID, int64(inputTokens+outputTokens))
+			h.rateLimiter.AddTokens(apiKeyID, int64(billedInputTokens+billedOutputTokens))
 		}
 	}
 
@@ -1445,19 +1457,24 @@ func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTok
 	}
 
 	logRequest(RequestLogEntry{
-		Status:       "ok",
-		Endpoint:     endpoint,
-		APIKeyID:     apiKeyID,
-		APIKeyName:   keyName,
-		APIKeyMasked: keyMasked,
-		Model:        model,
-		AccountID:    accountID,
-		AccountEmail: accountEmail,
-		ClientIP:     reqIP,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		Credits:      credits,
-		DurationMs:   durationMs(startedAt),
+		Status:             "ok",
+		Endpoint:           endpoint,
+		APIKeyID:           apiKeyID,
+		APIKeyName:         keyName,
+		APIKeyMasked:       keyMasked,
+		Model:              model,
+		AccountID:          accountID,
+		AccountEmail:       accountEmail,
+		ClientIP:           reqIP,
+		InputTokens:        billedInputTokens,
+		OutputTokens:       billedOutputTokens,
+		Credits:            billedCredits,
+		ActualInputTokens:  inputTokens,
+		ActualOutputTokens: outputTokens,
+		ActualCredits:      credits,
+		TokenMultiplier:    tokenMultiplier,
+		CreditMultiplier:   creditMultiplier,
+		DurationMs:         durationMs(startedAt),
 	})
 }
 
@@ -3566,6 +3583,7 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"maxPayloadBytes":     config.GetMaxPayloadBytes(),
 		"stickyPinTtlSeconds": int(config.GetStickyPinTTL() / time.Second),
 		"publicBaseURL":       config.GetPublicBaseURL(),
+		"apiBaseURL":          config.GetAPIBaseURL(),
 		"siteName":            siteName,
 		"expiredMessage":      expiredMessage,
 		"quotaMessage":        quotaMessage,
@@ -3624,6 +3642,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		MaxPayloadBytes     *int    `json:"maxPayloadBytes,omitempty"`
 		StickyPinTTLSeconds *int    `json:"stickyPinTtlSeconds,omitempty"`
 		PublicBaseURL       *string `json:"publicBaseURL,omitempty"`
+		APIBaseURL          *string `json:"apiBaseURL,omitempty"`
 		SiteName            *string `json:"siteName,omitempty"`
 		ExpiredMessage      *string `json:"expiredMessage,omitempty"`
 		QuotaMessage        *string `json:"quotaMessage,omitempty"`
@@ -3673,6 +3692,14 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	if req.PublicBaseURL != nil {
 		if err := config.UpdatePublicBaseURL(*req.PublicBaseURL); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	if req.APIBaseURL != nil {
+		if err := config.UpdateAPIBaseURL(*req.APIBaseURL); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
