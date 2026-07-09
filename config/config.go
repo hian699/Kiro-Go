@@ -212,6 +212,26 @@ type ApiKeyEntry struct {
 	TokensUsed    int64   `json:"tokensUsed,omitempty"`
 	CreditsUsed   float64 `json:"creditsUsed,omitempty"`
 	RequestsCount int64   `json:"requestsCount,omitempty"`
+
+	// IP limits (0 = unlimited)
+	MaxConcurrentIPs int      `json:"maxConcurrentIps,omitempty"`
+	MaxTotalIPs      int      `json:"maxTotalIps,omitempty"`
+	IPAllowlist      []string `json:"ipAllowlist,omitempty"` // exact IP or CIDR; empty = disabled
+	SeenIPs          []SeenIP `json:"seenIps,omitempty"`     // distinct IPs seen by this key
+
+	// Rate limits (0 = unlimited). Enforced over a fixed 60-second window; the
+	// per-window counters live in-memory (proxy.rateLimiter), never persisted.
+	RPMLimit int   `json:"rpmLimit,omitempty"` // max requests per minute
+	TPMLimit int64 `json:"tpmLimit,omitempty"` // max tokens per minute
+}
+
+// SeenIP is one distinct client IP observed for an API key, with first/last-seen
+// timestamps (Unix seconds) and a hit counter. Used to enforce per-key IP caps.
+type SeenIP struct {
+	IP        string `json:"ip"`
+	FirstSeen int64  `json:"firstSeen"`
+	LastSeen  int64  `json:"lastSeen"`
+	Count     int64  `json:"count,omitempty"`
 }
 
 // Config represents the global application configuration.
@@ -258,6 +278,14 @@ type Config struct {
 	// bodies with 400 CONTENT_LENGTH_EXCEEDS_THRESHOLD and there is no shrink-retry.
 	MaxPayloadBytes int `json:"maxPayloadBytes,omitempty"`
 
+	// StickyPinTTLSeconds is how long a conversation stays pinned to the same
+	// account for sticky routing. Longer TTL keeps a conversation on the same
+	// account across idle gaps, so the upstream prompt-cache prefix stays warm
+	// and fewer credits are burned re-creating it. 0 means "use
+	// DefaultStickyPinTTLSeconds". Read per-request, so changes apply at runtime
+	// without a restart.
+	StickyPinTTLSeconds int `json:"stickyPinTtlSeconds,omitempty"`
+
 	// Proxy configuration: optional outbound proxy for Kiro API requests
 	// Format: "socks5://host:port", "socks5://user:pass@host:port",
 	//         "http://host:port",  "http://user:pass@host:port"
@@ -283,6 +311,11 @@ type Config struct {
 	// It must point at the loopback port, NOT the admin UI port. Empty = fall back to
 	// http://localhost:<loopbackPort> (correct for the pure-local case).
 	PublicBaseURL string `json:"publicBaseURL,omitempty"`
+
+	// Branding / custom messaging (empty = built-in default; see Default* consts)
+	SiteName       string `json:"siteName,omitempty"`       // replaces "Kiro-Go" in UI/portal
+	ExpiredMessage string `json:"expiredMessage,omitempty"` // API-key expired rejection message
+	QuotaMessage   string `json:"quotaMessage,omitempty"`   // API-key over-quota rejection message
 
 	// SanitizeClaudeCodePrompt is kept for backward-compatible JSON loading only.
 	// Migrated to FilterClaudeCode on first load. Do not use directly.
@@ -1196,6 +1229,42 @@ func UpdateMaxPayloadBytes(n int) error {
 	return Save()
 }
 
+// DefaultStickyPinTTLSeconds is the sticky-routing pin lifetime used when the
+// setting is unset (0). 300s (5 min) preserves the original hardcoded behavior.
+const DefaultStickyPinTTLSeconds = 300
+
+// MaxStickyPinTTLSeconds caps the configurable pin lifetime at 24h so a
+// misconfiguration can't pin a conversation to a dead account indefinitely.
+const MaxStickyPinTTLSeconds = 24 * 60 * 60
+
+// GetStickyPinTTL returns the configured sticky-routing pin lifetime, falling
+// back to DefaultStickyPinTTLSeconds when unset or non-positive.
+func GetStickyPinTTL() time.Duration {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	seconds := DefaultStickyPinTTLSeconds
+	if cfg != nil && cfg.StickyPinTTLSeconds > 0 {
+		seconds = cfg.StickyPinTTLSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// UpdateStickyPinTTLSeconds sets the sticky-routing pin lifetime and persists
+// the change. Values are clamped to [0, MaxStickyPinTTLSeconds]; 0 restores the
+// default.
+func UpdateStickyPinTTLSeconds(n int) error {
+	if n < 0 {
+		n = 0
+	}
+	if n > MaxStickyPinTTLSeconds {
+		n = MaxStickyPinTTLSeconds
+	}
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.StickyPinTTLSeconds = n
+	return Save()
+}
+
 // GetPublicBaseURL returns the configured externally reachable base URL
 // (no trailing slash), or "" when unset. Used to build OAuth redirect_uri
 // values that work behind a reverse proxy / custom domain.
@@ -1213,6 +1282,65 @@ func UpdatePublicBaseURL(u string) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.PublicBaseURL = strings.TrimRight(strings.TrimSpace(u), "/")
+	return Save()
+}
+
+// Branding defaults, used when the corresponding Config field is empty.
+const (
+	DefaultSiteName       = "Kiro-Go"
+	DefaultExpiredMessage = "API key expired"
+	DefaultQuotaMessage   = "quota exceeded"
+)
+
+// GetSiteName returns the configured site name, or DefaultSiteName when unset.
+func GetSiteName() string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.SiteName == "" {
+		return DefaultSiteName
+	}
+	return cfg.SiteName
+}
+
+// GetExpiredMessage returns the configured expired-key message, or the default when unset.
+func GetExpiredMessage() string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.ExpiredMessage == "" {
+		return DefaultExpiredMessage
+	}
+	return cfg.ExpiredMessage
+}
+
+// GetQuotaMessage returns the configured over-quota message, or the default when unset.
+func GetQuotaMessage() string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.QuotaMessage == "" {
+		return DefaultQuotaMessage
+	}
+	return cfg.QuotaMessage
+}
+
+// GetBrandingRaw returns the raw stored branding values (empty when unset), so the
+// admin form can distinguish "unset" (show placeholder/default hint) from a value.
+func GetBrandingRaw() (siteName, expiredMessage, quotaMessage string) {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return "", "", ""
+	}
+	return cfg.SiteName, cfg.ExpiredMessage, cfg.QuotaMessage
+}
+
+// UpdateBranding sets the site name and custom messages (each trimmed; empty means
+// "use default") and persists the change.
+func UpdateBranding(siteName, expiredMessage, quotaMessage string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.SiteName = strings.TrimSpace(siteName)
+	cfg.ExpiredMessage = strings.TrimSpace(expiredMessage)
+	cfg.QuotaMessage = strings.TrimSpace(quotaMessage)
 	return Save()
 }
 

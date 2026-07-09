@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestUpdateSettingsPatchPreservesOmittedAPIKeyFields(t *testing.T) {
@@ -269,5 +270,45 @@ func TestAccountAllowOverageMigration(t *testing.T) {
 		if _, ok := a["allowOverage"]; ok {
 			t.Fatalf("expected allowOverage to be omitted from persisted file, got %+v", a)
 		}
+	}
+}
+
+func TestStickyPinTTLDefaultAndUpdate(t *testing.T) {
+	if err := Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+
+	wantDefault := time.Duration(DefaultStickyPinTTLSeconds) * time.Second
+	if got := GetStickyPinTTL(); got != wantDefault {
+		t.Fatalf("expected default TTL %v, got %v", wantDefault, got)
+	}
+
+	if err := UpdateStickyPinTTLSeconds(1800); err != nil {
+		t.Fatalf("update TTL: %v", err)
+	}
+	if got := GetStickyPinTTL(); got != 30*time.Minute {
+		t.Fatalf("expected 30m TTL, got %v", got)
+	}
+
+	// 0 restores the default.
+	if err := UpdateStickyPinTTLSeconds(0); err != nil {
+		t.Fatalf("reset TTL: %v", err)
+	}
+	if got := GetStickyPinTTL(); got != wantDefault {
+		t.Fatalf("expected default TTL after reset, got %v", got)
+	}
+
+	// Negative clamps to 0 (default), oversized clamps to the max.
+	if err := UpdateStickyPinTTLSeconds(-5); err != nil {
+		t.Fatalf("negative TTL: %v", err)
+	}
+	if got := GetStickyPinTTL(); got != wantDefault {
+		t.Fatalf("expected negative to clamp to default, got %v", got)
+	}
+	if err := UpdateStickyPinTTLSeconds(MaxStickyPinTTLSeconds + 10_000); err != nil {
+		t.Fatalf("oversized TTL: %v", err)
+	}
+	if got := GetStickyPinTTL(); got != time.Duration(MaxStickyPinTTLSeconds)*time.Second {
+		t.Fatalf("expected oversized to clamp to max, got %v", got)
 	}
 }

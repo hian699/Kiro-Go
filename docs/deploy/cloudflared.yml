@@ -1,0 +1,18 @@
+# Reference cloudflared tunnel config fronting Kiro-Go.
+# Cloudflare terminates TLS at the edge, absorbs DDoS, and forwards the real
+# client IP in CF-Connecting-IP (the app's first-choice IP source).
+#
+# The outermost rate-limiting layer is configured in the Cloudflare dashboard
+# (Security > WAF > Rate limiting rules), not here — e.g. "more than 100
+# requests/min from one IP to /v1/* => block for 1m". This file only routes
+# tunnel traffic to the origin (which may be nginx/traefik or the app directly).
+
+tunnel: <TUNNEL-UUID>
+credentials-file: /etc/cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  # Point at your reverse proxy if present, else straight at the app.
+  - hostname: api.example.com
+    service: http://kiro-go:8080
+  # Required catch-all.
+  - service: http_status:404

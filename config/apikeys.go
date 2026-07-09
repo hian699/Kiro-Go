@@ -129,6 +129,11 @@ func UpdateApiKey(id string, patch ApiKeyEntry) error {
 	cfg.ApiKeys[idx].TokenLimit = patch.TokenLimit
 	cfg.ApiKeys[idx].CreditLimit = patch.CreditLimit
 	cfg.ApiKeys[idx].ExpiresAt = patch.ExpiresAt
+	cfg.ApiKeys[idx].MaxConcurrentIPs = patch.MaxConcurrentIPs
+	cfg.ApiKeys[idx].MaxTotalIPs = patch.MaxTotalIPs
+	cfg.ApiKeys[idx].IPAllowlist = patch.IPAllowlist
+	cfg.ApiKeys[idx].RPMLimit = patch.RPMLimit
+	cfg.ApiKeys[idx].TPMLimit = patch.TPMLimit
 	if patch.Migrated {
 		cfg.ApiKeys[idx].Migrated = true
 	}

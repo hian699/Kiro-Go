@@ -219,6 +219,7 @@
     }
     .p-pill.ok { background: color-mix(in oklab, var(--success) 16%, transparent); color: var(--success); }
     .p-pill.bad { background: color-mix(in oklab, var(--destructive) 16%, transparent); color: var(--destructive); }
+    .p-status-note { margin-top: 6px; font-size: 0.85rem; color: var(--muted, #9aa0a6); }
 
     /* Hero — remaining balance */
     .p-hero {
@@ -571,6 +572,26 @@
             <span class="dots"></span>
             <span class="v" id="reqVal"></span>
           </div>
+          <div class="p-meta-row" id="ipsActiveRow" style="display:none;">
+            <span class="k" data-t="ipsActive"></span>
+            <span class="dots"></span>
+            <span class="v" id="ipsActiveVal"></span>
+          </div>
+          <div class="p-meta-row" id="ipsTotalRow" style="display:none;">
+            <span class="k" data-t="ipsTotal"></span>
+            <span class="dots"></span>
+            <span class="v" id="ipsTotalVal"></span>
+          </div>
+          <div class="p-meta-row" id="rpmRow" style="display:none;">
+            <span class="k" data-t="rpm"></span>
+            <span class="dots"></span>
+            <span class="v" id="rpmVal"></span>
+          </div>
+          <div class="p-meta-row" id="tpmRow" style="display:none;">
+            <span class="k" data-t="tpm"></span>
+            <span class="dots"></span>
+            <span class="v" id="tpmVal"></span>
+          </div>
           <div class="p-meta-row" id="expiryRow" style="display:none;">
             <span class="k" data-t="expiry"></span>
             <span class="dots"></span>
@@ -591,6 +612,7 @@
                 <tr>
                   <th data-t="colTime"></th>
                   <th data-t="colModel"></th>
+                  <th data-t="colIP"></th>
                   <th class="num" data-t="colTokens"></th>
                   <th class="num" data-t="colCredits"></th>
                 </tr>
@@ -648,13 +670,17 @@
         vi: {
           brandTag: 'Cổng khách hàng',
           title: 'Kiểm tra API Key',
-          hint: 'Nhập API key của bạn để xem số dư còn lại và nhật ký sử dụng. Trang này không cần mật khẩu quản trị.',
+          hint: 'Nhập API key của bạn để xem số dư còn lại và nhật ký sử dụng.',
           keyPlaceholder: 'sk-...',
           check: 'Kiểm tra',
           usageTitle: 'Tình trạng sử dụng',
           tokens: 'Tokens',
           credits: 'Credits',
           requests: 'Tổng yêu cầu',
+          ipsActive: 'IP đang hoạt động',
+          ipsTotal: 'Tổng số IP',
+          rpm: 'Yêu cầu/phút (RPM)',
+          tpm: 'Token/phút (TPM)',
           expiry: 'Hết hạn',
           unlimited: 'Không giới hạn',
           used: 'đã dùng',
@@ -671,6 +697,7 @@
           refresh: 'Làm mới',
           colTime: 'Thời gian',
           colModel: 'Model',
+          colIP: 'IP',
           colTokens: 'Tokens',
           colCredits: 'Credits',
           ledgerTotal: 'Tổng credit đã dùng',
@@ -695,6 +722,10 @@
           tokens: 'Tokens',
           credits: 'Credits',
           requests: 'Total requests',
+          ipsActive: 'Active IPs',
+          ipsTotal: 'Total IPs',
+          rpm: 'Requests/min (RPM)',
+          tpm: 'Tokens/min (TPM)',
           expiry: 'Expiry',
           unlimited: 'Unlimited',
           used: 'used',
@@ -711,6 +742,7 @@
           refresh: 'Refresh',
           colTime: 'Time',
           colModel: 'Model',
+          colIP: 'IP',
           colTokens: 'Tokens',
           colCredits: 'Credits',
           ledgerTotal: 'Total credits spent',
@@ -827,6 +859,21 @@
           pill.textContent = reason;
         }
 
+        var note = $('statusNote');
+        if (!note) {
+          note = document.createElement('div');
+          note.id = 'statusNote';
+          note.className = 'p-status-note';
+          pill.parentNode.appendChild(note);
+        }
+        var msg = '';
+        if (!d.valid) {
+          if (d.expired && d.expiredMessage) msg = d.expiredMessage;
+          else if ((d.overToken || d.overCredit) && d.quotaMessage) msg = d.quotaMessage;
+        }
+        note.textContent = msg;
+        note.style.display = msg ? '' : 'none';
+
         // Hero: prefer remaining credits; fall back to tokens; else unlimited.
         var heroNum = $('heroNum'), heroUnit = $('heroUnit'), heroLabel = $('heroLabel');
         if (d.creditLimit && d.creditLimit > 0) {
@@ -849,6 +896,37 @@
         setGauge($('creditsVal'), $('creditsGaugeWrap'), $('creditsGauge'), d.creditsUsed || 0, d.creditLimit || 0);
 
         $('reqVal').textContent = fmtNum(d.requestsCount || 0);
+
+        // IP usage: show used count, add "/ cap" only when the cap is > 0.
+        var concurrentIps = d.concurrentIps || 0;
+        var maxConcurrentIps = d.maxConcurrentIps || 0;
+        $('ipsActiveRow').style.display = '';
+        $('ipsActiveVal').textContent = maxConcurrentIps > 0
+          ? fmtNum(concurrentIps) + ' / ' + fmtNum(maxConcurrentIps)
+          : fmtNum(concurrentIps);
+        var totalIps = d.totalIps || 0;
+        var maxTotalIps = d.maxTotalIps || 0;
+        $('ipsTotalRow').style.display = '';
+        $('ipsTotalVal').textContent = maxTotalIps > 0
+          ? fmtNum(totalIps) + ' / ' + fmtNum(maxTotalIps)
+          : fmtNum(totalIps);
+
+        // Rate limits: show "used this minute / cap" only when the cap is set.
+        var rpmLimit = d.rpmLimit || 0;
+        if (rpmLimit > 0) {
+          $('rpmRow').style.display = '';
+          $('rpmVal').textContent = fmtNum(d.rpmUsed || 0) + ' / ' + fmtNum(rpmLimit);
+        } else {
+          $('rpmRow').style.display = 'none';
+        }
+        var tpmLimit = d.tpmLimit || 0;
+        if (tpmLimit > 0) {
+          $('tpmRow').style.display = '';
+          $('tpmVal').textContent = fmtNum(d.tpmUsed || 0) + ' / ' + fmtNum(tpmLimit);
+        } else {
+          $('tpmRow').style.display = 'none';
+        }
+
         if (d.expiresAt) {
           $('expiryRow').style.display = '';
           $('expiryVal').textContent = fmtDate(d.expiresAt);
@@ -897,6 +975,7 @@
           return '<tr>' +
             '<td class="time">' + fmtTime(e.time) + '</td>' +
             '<td class="model" title="' + (e.model || '') + '">' + escapeHtml(e.model || '—') + '</td>' +
+            '<td class="ip">' + escapeHtml(e.ip || '—') + '</td>' +
             '<td class="num">' + fmtNum(e.totalTokens || 0) + '</td>' +
             '<td class="num credits">' + fmtNum(e.credits || 0) + '</td>' +
             '</tr>';
@@ -1003,6 +1082,18 @@
       });
 
       applyTheme(getThemePref());
+      // Rewrite the portal brand + title from the configured site name.
+      (function () {
+        fetch('/api/site').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+          if (!d || !d.siteName) return;
+          var name = d.siteName;
+          // Title is "API Key — Kiro-Go"; replace the trailing brand segment.
+          document.title = document.title.replace(/Kiro-Go/g, name);
+          document.querySelectorAll('.p-brand b, b').forEach(function (el) {
+            if (el.textContent.trim() === 'Kiro-Go') el.textContent = name;
+          });
+        }).catch(function () { /* keep default */ });
+      })();
       applyLang();
     })();
   </script>

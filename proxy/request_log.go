@@ -22,6 +22,7 @@ type RequestLogEntry struct {
 	Model        string  `json:"model,omitempty"`
 	AccountID    string  `json:"accountId,omitempty"`
 	AccountEmail string  `json:"accountEmail,omitempty"`
+	ClientIP     string  `json:"clientIp,omitempty"` // resolved client IP of the caller
 	InputTokens  int     `json:"inputTokens"`
 	OutputTokens int     `json:"outputTokens"`
 	TotalTokens  int     `json:"totalTokens"`
@@ -236,6 +237,19 @@ type apiKeySelfInfo struct {
 	ExpiresAt     int64   `json:"expiresAt,omitempty"`
 	Valid         bool    `json:"valid"` // false when the key is disabled/expired/over-limit
 	BaseURL       string  `json:"baseURL,omitempty"` // externally reachable API base, so the customer knows where to point their client
+
+	ConcurrentIPs    int `json:"concurrentIps"`
+	TotalIPs         int `json:"totalIps"`
+	MaxConcurrentIPs int `json:"maxConcurrentIps"`
+	MaxTotalIPs      int `json:"maxTotalIps"`
+
+	RPMLimit     int   `json:"rpmLimit"`
+	TPMLimit     int64 `json:"tpmLimit"`
+	RPMUsed      int   `json:"rpmUsed"`
+	TPMUsed      int64 `json:"tpmUsed"`
+
+	ExpiredMessage string `json:"expiredMessage,omitempty"`
+	QuotaMessage   string `json:"quotaMessage,omitempty"`
 }
 
 // apiKeySelfLogEntry is one row of a customer's own usage history. Deliberately
@@ -243,6 +257,7 @@ type apiKeySelfInfo struct {
 type apiKeySelfLogEntry struct {
 	Time         int64   `json:"time"`
 	Model        string  `json:"model,omitempty"`
+	IP           string  `json:"ip,omitempty"`
 	InputTokens  int     `json:"inputTokens"`
 	OutputTokens int     `json:"outputTokens"`
 	TotalTokens  int     `json:"totalTokens"`
@@ -285,6 +300,7 @@ func (h *Handler) apiKeySelfLogs(w http.ResponseWriter, r *http.Request) {
 		out = append(out, apiKeySelfLogEntry{
 			Time:         e.Time,
 			Model:        e.Model,
+			IP:           e.ClientIP,
 			InputTokens:  e.InputTokens,
 			OutputTokens: e.OutputTokens,
 			TotalTokens:  e.TotalTokens,
@@ -341,6 +357,13 @@ func (h *Handler) apiKeySelfInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	concIPs, totalIPs := config.ApiKeyIPStats(*entry, ipActiveWindow)
+
+	rpmUsed, tpmUsed := 0, int64(0)
+	if h.rateLimiter != nil {
+		rpmUsed, tpmUsed = h.rateLimiter.snapshot(entry.ID)
+	}
+
 	json.NewEncoder(w).Encode(apiKeySelfInfo{
 		Enabled:       entry.Enabled,
 		TokenLimit:    entry.TokenLimit,
@@ -356,6 +379,19 @@ func (h *Handler) apiKeySelfInfo(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:     entry.ExpiresAt,
 		Valid:         entry.Enabled && !expired && !overToken && !overCredit,
 		BaseURL:       selfServiceBaseURL(r),
+
+		ConcurrentIPs:    concIPs,
+		TotalIPs:         totalIPs,
+		MaxConcurrentIPs: entry.MaxConcurrentIPs,
+		MaxTotalIPs:      entry.MaxTotalIPs,
+
+		RPMLimit: entry.RPMLimit,
+		TPMLimit: entry.TPMLimit,
+		RPMUsed:  rpmUsed,
+		TPMUsed:  tpmUsed,
+
+		ExpiredMessage: config.GetExpiredMessage(),
+		QuotaMessage:   config.GetQuotaMessage(),
 	})
 }
 

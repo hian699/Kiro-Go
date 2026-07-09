@@ -71,13 +71,30 @@ func (h *Handler) authenticate(r *http.Request) (*config.ApiKeyEntry, error) {
 			return nil, newAuthError(http.StatusUnauthorized, "authentication_error", "API key disabled")
 		}
 		if config.ApiKeyExpired(*entry) {
-			return nil, newAuthError(http.StatusUnauthorized, "authentication_error", "API key expired")
+			return nil, newAuthError(http.StatusUnauthorized, "authentication_error", config.GetExpiredMessage())
 		}
 		if overToken, overCredit := config.ApiKeyOverLimit(*entry); overToken || overCredit {
-			if overToken {
-				return nil, newAuthError(http.StatusTooManyRequests, "rate_limit_error", "token limit exceeded")
+			return nil, newAuthError(http.StatusTooManyRequests, "rate_limit_error", config.GetQuotaMessage())
+		}
+		if reason := config.EnforceAndRecordIP(entry.ID, clientIP(r), ipActiveWindow); reason != nil {
+			switch *reason {
+			case config.IPRejectForbidden:
+				return nil, newAuthError(http.StatusForbidden, "permission_error", "IP not allowed")
+			case config.IPRejectTooManyConc:
+				return nil, newAuthError(http.StatusTooManyRequests, "rate_limit_error", "concurrent IP limit exceeded")
+			default:
+				return nil, newAuthError(http.StatusTooManyRequests, "rate_limit_error", "IP limit exceeded")
 			}
-			return nil, newAuthError(http.StatusTooManyRequests, "rate_limit_error", "credit limit exceeded")
+		}
+		if h.rateLimiter != nil {
+			if reason := h.rateLimiter.Allow(entry.ID, entry.RPMLimit, entry.TPMLimit); reason != nil {
+				switch *reason {
+				case RateRejectTPM:
+					return nil, newAuthError(http.StatusTooManyRequests, "rate_limit_error", "tokens-per-minute limit exceeded")
+				default:
+					return nil, newAuthError(http.StatusTooManyRequests, "rate_limit_error", "requests-per-minute limit exceeded")
+				}
+			}
 		}
 		return entry, nil
 	}

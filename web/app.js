@@ -1469,6 +1469,63 @@
     closeAllCustomSelects();
     closeDialog('testModal');
   }
+
+  // openApiViewModal opens the shared api-view modal, shows a loading spinner,
+  // fetches the given kind ('models' | 'stats') and renders the result. Models
+  // come from the public /v1/models endpoint; stats from the password-gated
+  // admin /stats endpoint (admin has no API key of its own).
+  async function openApiViewModal(kind) {
+    const titleEl = $('apiViewTitle');
+    const body = $('apiViewBody');
+    titleEl.textContent = t(kind === 'models' ? 'api.modelsTitle' : 'api.statsTitle');
+    body.innerHTML = '<div class="api-view-loading"><i class="fa-solid fa-spinner fa-spin"></i> <span>' + escapeHtml(t('api.loading')) + '</span></div>';
+    openDialog('apiViewModal');
+    try {
+      if (kind === 'models') {
+        const res = await fetch('/v1/models', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error('http ' + res.status);
+        const d = await res.json();
+        renderApiViewModels(body, Array.isArray(d.data) ? d.data : []);
+      } else {
+        const res = await api('/stats');
+        if (!res.ok) throw new Error('http ' + res.status);
+        const d = await res.json();
+        renderApiViewStats(body, d);
+      }
+    } catch (e) {
+      body.innerHTML = '<div class="api-view-error">' + escapeHtml(t('api.loadFailed')) + '</div>';
+    }
+  }
+
+  function renderApiViewModels(body, models) {
+    if (!models.length) {
+      body.innerHTML = '<div class="api-view-error">' + escapeHtml(t('api.loadFailed')) + '</div>';
+      return;
+    }
+    const rows = models.map(function (m) {
+      const id = escapeHtml((m && m.id) || '');
+      return '<li class="api-view-model"><span class="api-view-model-id">' + id + '</span></li>';
+    }).join('');
+    body.innerHTML = '<div class="api-view-count">' + escapeHtml(t('api.modelCount', models.length)) + '</div>' +
+      '<ul class="api-view-model-list">' + rows + '</ul>';
+  }
+
+  function renderApiViewStats(body, d) {
+    const rows = [
+      ['api.statsTotalRequests', d.totalRequests],
+      ['api.statsSuccess', d.successRequests],
+      ['api.statsFailed', d.failedRequests],
+      ['api.statsTokens', d.totalTokens],
+      ['api.statsCredits', d.totalCredits]
+    ].map(function (pair) {
+      return '<div class="api-view-stat-row"><span class="api-view-stat-label">' + escapeHtml(t(pair[0])) +
+        '</span><span class="api-view-stat-val">' + escapeHtml(formatNumber(pair[1] || 0)) + '</span></div>';
+    }).join('');
+    body.innerHTML = '<div class="api-view-stats">' + rows + '</div>';
+  }
+
+  function closeApiViewModal() { closeDialog('apiViewModal'); }
+
   async function runTestAccount(id, model) {
     if (testModalRunning) return;
     testModalRunning = true;
@@ -1502,7 +1559,11 @@
     $('requireApiKey').checked = d.requireApiKey;
     $('allowOverUsage').checked = d.allowOverUsage || false;
     $('maxPayloadBytes').value = String(d.maxPayloadBytes || 2000000);
+    if ($('stickyPinTtl')) $('stickyPinTtl').value = String(d.stickyPinTtlSeconds || 300);
     if ($('publicBaseURL')) $('publicBaseURL').value = d.publicBaseURL || '';
+    if ($('siteName')) $('siteName').value = d.siteName || '';
+    if ($('expiredMessage')) $('expiredMessage').value = d.expiredMessage || '';
+    if ($('quotaMessage')) $('quotaMessage').value = d.quotaMessage || '';
     await Promise.all([loadThinkingConfig(), loadEndpointConfig(), loadProxyConfig(), loadProxyPool(), loadPromptFilter(), loadApiKeys()]);
     refreshCustomSelects();
   }
@@ -1601,6 +1662,22 @@
       const d = await res.json().catch(() => ({}));
       if (!res.ok || d.success === false) throw new Error(d.error || t('common.saveFailed'));
       toast(t('settings.publicBaseURLSaved'), 'success');
+    } catch (e) {
+      toast((e && e.message) || t('common.saveFailed'), 'error');
+    }
+  }
+  async function saveBranding() {
+    const payload = {
+      siteName: $('siteName').value.trim(),
+      expiredMessage: $('expiredMessage').value.trim(),
+      quotaMessage: $('quotaMessage').value.trim()
+    };
+    try {
+      const res = await api('/settings', { method: 'POST', body: JSON.stringify(payload) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.success === false) throw new Error(d.error || t('common.saveFailed'));
+      toast(t('settings.brandingSaved'), 'success');
+      if (typeof applySiteName === 'function') applySiteName(payload.siteName || 'Kiro-Go');
     } catch (e) {
       toast((e && e.message) || t('common.saveFailed'), 'error');
     }
@@ -1746,7 +1823,8 @@
   async function saveOverUsageConfig() {
     const allowOverUsage = $('allowOverUsage').checked;
     const maxPayloadBytes = parseInt($('maxPayloadBytes').value, 10);
-    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes }) });
+    const stickyPinTtlSeconds = parseInt($('stickyPinTtl').value, 10);
+    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes, stickyPinTtlSeconds }) });
     toast(t('settings.overUsageSaved'), 'success');
   }
   async function changePassword() {
@@ -1878,7 +1956,20 @@
       const expiryLine = apiKeyExpiryLine(item.expiresAt);
       const tokensLine = usageLine(t('apiKeys.tokens'), item.tokensUsed || 0, item.tokenLimit || 0);
       const creditsLine = usageLine(t('apiKeys.credits'), item.creditsUsed || 0, item.creditLimit || 0);
+      const ipActive = escapeHtml(formatNumber(item.concurrentIps || 0))
+        + (item.maxConcurrentIps ? ' / ' + escapeHtml(formatNumber(item.maxConcurrentIps)) : ' / ' + escapeHtml(t('apiKeys.unlimited')));
+      const ipTotal = escapeHtml(formatNumber(item.totalIps || 0))
+        + (item.maxTotalIps ? ' / ' + escapeHtml(formatNumber(item.maxTotalIps)) : ' / ' + escapeHtml(t('apiKeys.unlimited')));
+      const ipLine = '<div class="text-xs muted-text">' + escapeHtml(t('apiKeys.ipsUsed')) + ': ' + ipActive
+        + ' · ' + escapeHtml(t('apiKeys.totalIps')) + ': ' + ipTotal + '</div>';
       const requestsLine = '<div class="text-xs muted-text">' + escapeHtml(t('apiKeys.requests')) + ': ' + escapeHtml(formatNumber(item.requestsCount || 0)) + '</div>';
+      let rateLine = '';
+      if (item.rpmLimit || item.tpmLimit) {
+        const rpm = item.rpmLimit ? escapeHtml(formatNumber(item.rpmLimit)) : escapeHtml(t('apiKeys.unlimited'));
+        const tpm = item.tpmLimit ? escapeHtml(formatNumber(item.tpmLimit)) : escapeHtml(t('apiKeys.unlimited'));
+        rateLine = '<div class="text-xs muted-text">' + escapeHtml(t('apiKeys.rpmLimit')) + ': ' + rpm
+          + ' · ' + escapeHtml(t('apiKeys.tpmLimit')) + ': ' + tpm + '</div>';
+      }
       return '<div class="card" data-apikey-id="' + id + '" style="margin-top:0.5rem;padding:0.75rem;">' +
         '<div class="flex items-center gap-2" style="flex-wrap:wrap;justify-content:space-between;">' +
           '<div class="flex items-center gap-2" style="flex-wrap:wrap;">' +
@@ -1897,13 +1988,16 @@
             '<button class="btn btn-outline btn-sm" type="button" data-apikey-action="portal" data-id="' + id + '" title="' + escapeAttr(t('apiKeys.portalLinkHint')) + '"><i class="fa-solid fa-link"></i></button>' +
             '<button class="btn btn-outline btn-sm" type="button" data-apikey-action="edit" data-id="' + id + '">' + escapeHtml(t('apiKeys.actionEdit')) + '</button>' +
             '<button class="btn btn-outline btn-sm" type="button" data-apikey-action="reset" data-id="' + id + '">' + escapeHtml(t('apiKeys.actionReset')) + '</button>' +
+            '<button class="btn btn-outline btn-sm" type="button" data-apikey-action="reset-ips" data-id="' + id + '">' + escapeHtml(t('apiKeys.actionResetIps')) + '</button>' +
             '<button class="btn btn-danger btn-sm" type="button" data-apikey-action="delete" data-id="' + id + '">' + escapeHtml(t('apiKeys.actionDelete')) + '</button>' +
           '</div>' +
         '</div>' +
         '<div style="margin-top:0.5rem;display:grid;gap:0.35rem;">' +
           tokensLine +
           creditsLine +
+          ipLine +
           requestsLine +
+          rateLine +
           expiryLine +
         '</div>' +
       '</div>';
@@ -1928,6 +2022,11 @@
     $('apiKeyForm_tokenLimit').value = entry ? String(entry.tokenLimit || 0) : '0';
     $('apiKeyForm_creditLimit').value = entry ? String(entry.creditLimit || 0) : '0';
     $('apiKeyForm_expiresAt').value = (entry && entry.expiresAt) ? unixToLocalInput(normalizeUnixSeconds(entry.expiresAt)) : '';
+    $('apiKeyForm_maxConcurrentIps').value = entry ? String(entry.maxConcurrentIps || 0) : '0';
+    $('apiKeyForm_maxTotalIps').value = entry ? String(entry.maxTotalIps || 0) : '0';
+    $('apiKeyForm_ipAllowlist').value = (entry && entry.ipAllowlist) ? entry.ipAllowlist.join('\n') : '';
+    $('apiKeyForm_rpmLimit').value = entry ? String(entry.rpmLimit || 0) : '0';
+    $('apiKeyForm_tpmLimit').value = entry ? String(entry.tpmLimit || 0) : '0';
     apiKeyModalSubmitting = false;
     $('apiKeyModalSaveBtn').disabled = false;
     openDialog('apiKeyModal');
@@ -1947,6 +2046,11 @@
     $('apiKeyBulk_tokenLimit').value = '0';
     $('apiKeyBulk_creditLimit').value = '0';
     $('apiKeyBulk_expiresAt').value = '';
+    $('apiKeyBulk_rpmLimit').value = '0';
+    $('apiKeyBulk_tpmLimit').value = '0';
+    $('apiKeyBulk_maxConcurrentIps').value = '0';
+    $('apiKeyBulk_maxTotalIps').value = '0';
+    $('apiKeyBulk_ipAllowlist').value = '';
     $('apiKeyBulkSaveBtn').disabled = false;
     openDialog('apiKeyBulkModal');
   }
@@ -1964,13 +2068,24 @@
       if (isNaN(count) || count < 1 || count > 100) throw new Error(t('apiKeys.bulkCountError'));
       const tokenLimit = parseInt($('apiKeyBulk_tokenLimit').value, 10);
       const creditLimit = parseFloat($('apiKeyBulk_creditLimit').value);
+      const rpmLimit = parseInt($('apiKeyBulk_rpmLimit').value, 10);
+      const tpmLimit = parseInt($('apiKeyBulk_tpmLimit').value, 10);
+      const maxConcurrentIps = parseInt($('apiKeyBulk_maxConcurrentIps').value, 10);
+      const maxTotalIps = parseInt($('apiKeyBulk_maxTotalIps').value, 10);
+      const ipAllowlist = $('apiKeyBulk_ipAllowlist').value
+        .split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
       const payload = {
         count,
         namePrefix: $('apiKeyBulk_namePrefix').value.trim(),
         enabled: $('apiKeyBulk_enabled').checked,
         tokenLimit: isNaN(tokenLimit) || tokenLimit < 0 ? 0 : tokenLimit,
         creditLimit: isNaN(creditLimit) || creditLimit < 0 ? 0 : creditLimit,
-        expiresAt: localInputToUnix($('apiKeyBulk_expiresAt').value)
+        expiresAt: localInputToUnix($('apiKeyBulk_expiresAt').value),
+        rpmLimit: isNaN(rpmLimit) || rpmLimit < 0 ? 0 : rpmLimit,
+        tpmLimit: isNaN(tpmLimit) || tpmLimit < 0 ? 0 : tpmLimit,
+        maxConcurrentIps: isNaN(maxConcurrentIps) || maxConcurrentIps < 0 ? 0 : maxConcurrentIps,
+        maxTotalIps: isNaN(maxTotalIps) || maxTotalIps < 0 ? 0 : maxTotalIps,
+        ipAllowlist: ipAllowlist
       };
       const res = await api('/api-keys/bulk', { method: 'POST', body: JSON.stringify(payload) });
       const d = await res.json().catch(() => ({}));
@@ -2017,12 +2132,23 @@
       const tokenLimit = parseInt($('apiKeyForm_tokenLimit').value, 10);
       const creditLimit = parseFloat($('apiKeyForm_creditLimit').value);
       const expiresAt = localInputToUnix($('apiKeyForm_expiresAt').value);
+      const maxConcurrentIps = parseInt($('apiKeyForm_maxConcurrentIps').value, 10);
+      const maxTotalIps = parseInt($('apiKeyForm_maxTotalIps').value, 10);
+      const rpmLimit = parseInt($('apiKeyForm_rpmLimit').value, 10);
+      const tpmLimit = parseInt($('apiKeyForm_tpmLimit').value, 10);
+      const ipAllowlist = $('apiKeyForm_ipAllowlist').value
+        .split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
       const payload = {
         name: name,
         enabled: enabled,
         tokenLimit: isNaN(tokenLimit) || tokenLimit < 0 ? 0 : tokenLimit,
         creditLimit: isNaN(creditLimit) || creditLimit < 0 ? 0 : creditLimit,
-        expiresAt: expiresAt
+        expiresAt: expiresAt,
+        maxConcurrentIps: isNaN(maxConcurrentIps) || maxConcurrentIps < 0 ? 0 : maxConcurrentIps,
+        maxTotalIps: isNaN(maxTotalIps) || maxTotalIps < 0 ? 0 : maxTotalIps,
+        rpmLimit: isNaN(rpmLimit) || rpmLimit < 0 ? 0 : rpmLimit,
+        tpmLimit: isNaN(tpmLimit) || tpmLimit < 0 ? 0 : tpmLimit,
+        ipAllowlist: ipAllowlist
       };
       let res, d;
       if (apiKeyEditingId) {
@@ -2099,6 +2225,23 @@
     }
   }
 
+  async function resetApiKeyIPs(id) {
+    const ok = await confirmAction(t('apiKeys.confirmResetIps'), {
+      title: t('apiKeys.actionResetIps'),
+      confirmText: t('apiKeys.actionResetIps')
+    });
+    if (!ok) return;
+    try {
+      const res = await api('/api-keys/' + encodeURIComponent(id) + '/reset-ips', { method: 'POST' });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.success === false) throw new Error(d.error || t('common.failed'));
+      toast(t('apiKeys.ipsReset'), 'success');
+      await loadApiKeys();
+    } catch (e) {
+      toast((e && e.message) || t('common.failed'), 'error');
+    }
+  }
+
   // Copies the self-service portal URL so the seller can hand it to a customer
   // alongside their key. Prefers the configured public base URL, else this origin.
   async function copyPortalLink() {
@@ -2150,6 +2293,7 @@
         if (action === 'edit') openApiKeyModal(entry);
         else if (action === 'delete') deleteApiKeyEntry(id, name);
         else if (action === 'reset') resetApiKeyUsageEntry(id, name);
+        else if (action === 'reset-ips') resetApiKeyIPs(id);
         else if (action === 'portal') copyPortalLink();
       });
       list.addEventListener('change', e => {
@@ -3715,10 +3859,15 @@
       if (e.durationMs) { durSum += e.durationMs; durCount++; }
     }
     const avg = durCount ? Math.round(durSum / durCount) : 0;
+    const chip = (label, value, danger) =>
+      '<span class="metrics-chip' + (danger ? ' metrics-chip-danger' : '') + '">' +
+        '<span class="metrics-chip-label">' + escapeHtml(label) + '</span>' +
+        '<span class="metrics-chip-value">' + escapeHtml(value) + '</span>' +
+      '</span>';
     box.innerHTML =
-      '<span>' + escapeHtml(t('metrics.logCount')) + ': <strong>' + escapeHtml(String(total)) + '</strong></span>' +
-      '<span>' + escapeHtml(t('metrics.avgLatency')) + ': <strong>' + escapeHtml(String(avg)) + 'ms</strong></span>' +
-      '<span>' + escapeHtml(t('metrics.quotaErrors')) + ': <strong>' + escapeHtml(String(errorCount)) + '</strong></span>';
+      chip(t('metrics.logCount'), String(total), false) +
+      chip(t('metrics.avgLatency'), String(avg) + 'ms', false) +
+      chip(t('metrics.quotaErrors'), String(errorCount), errorCount > 0);
   }
 
   function renderApiLog(allEntries) {
@@ -3865,6 +4014,17 @@
     else closeConsole();
     stopTabPolling();
     if (tab === 'apilog') { populateApiLogKeyFilter(); loadApiLog(); startTabPolling(loadApiLog); }
+    else if (tab === 'settings') { startTabPolling(refreshApiKeysIfIdle); }
+  }
+
+  // refreshApiKeysIfIdle re-fetches API key usage while the settings tab is open,
+  // so the tokens/credits counters update without a manual page reload. Skips while
+  // a modal is open (editing) so it never clobbers in-progress form input.
+  function refreshApiKeysIfIdle() {
+    const tab = $('tabSettings');
+    if (!tab || tab.classList.contains('hidden')) return;
+    if (document.body.classList.contains('modal-open')) return;
+    loadApiKeys();
   }
 
   // Event wiring
@@ -3989,6 +4149,8 @@
     $('saveProxyBtn').addEventListener('click', saveProxyConfig);
     const savePbu = $('savePublicBaseURLBtn');
     if (savePbu) savePbu.addEventListener('click', savePublicBaseURL);
+    const saveBrandingBtn = $('saveBrandingBtn');
+    if (saveBrandingBtn) saveBrandingBtn.addEventListener('click', saveBranding);
     $('proxyImportBtn').addEventListener('click', importProxies);
     $('proxyPoolList').addEventListener('click', e => {
       const btn = e.target.closest('button[data-pool-action]');
@@ -4081,6 +4243,16 @@
     });
   }
 
+  function bindApiEvents() {
+    const vm = $('viewModelsBtn');
+    if (vm) vm.addEventListener('click', () => openApiViewModal('models'));
+    const vs = $('viewStatsBtn');
+    if (vs) vs.addEventListener('click', () => openApiViewModal('stats'));
+    const close = $('apiViewModalClose');
+    if (close) close.addEventListener('click', closeApiViewModal);
+    bindDialogBackdropClose('apiViewModal', closeApiViewModal);
+  }
+
   function wireEvents() {
     bindLoginEvents();
     bindShellEvents();
@@ -4091,6 +4263,35 @@
     bindDetailEvents();
     bindTestEvents();
     bindConsoleEvents();
+    bindApiEvents();
+  }
+
+  // applySiteName rewrites every place the hardcoded "Kiro-Go" name appears with
+  // the configured name. Idempotent; safe to call repeatedly (e.g. after save).
+  function applySiteName(name) {
+    name = (name || '').trim() || 'Kiro-Go';
+    document.title = name;
+    document.querySelectorAll('.brand-text, .footer-title').forEach(function (el) {
+      el.textContent = name;
+    });
+    document.querySelectorAll('.brand[aria-label]').forEach(function (el) {
+      el.setAttribute('aria-label', name);
+    });
+    // Footer copyright: "© <year> Kiro-Go" — rewrite the trailing name only.
+    var meta = document.querySelector('.footer-meta span');
+    if (meta) {
+      var yr = new Date().getFullYear();
+      meta.innerHTML = '© <span id="footerYear">' + yr + '</span> ' + escapeHtml(name);
+    }
+  }
+
+  async function loadSiteName() {
+    try {
+      const res = await fetch('/api/site');
+      if (!res.ok) return;
+      const d = await res.json();
+      if (d && d.siteName) applySiteName(d.siteName);
+    } catch (e) { /* keep default name on failure */ }
   }
 
   // Init
@@ -4099,6 +4300,7 @@
     await loadLocale(currentLang);
     if (currentLang !== 'zh') await loadLocale('zh');
     applyTranslations();
+    loadSiteName();
     initCustomSelectObserver();
     initPrivacyMode();
     initRememberMe();

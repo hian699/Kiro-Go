@@ -2599,6 +2599,102 @@ body:has(#tabApilog:not(.hidden)) #mainPage > .container {
   background: var(--accent);
   opacity: 1;
 }
+.api-view-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  margin-right: 0.375rem;
+  border: 1px solid var(--foreground);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  line-height: 1;
+  flex: none;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.api-view-btn:hover {
+  opacity: 0.86;
+}
+.api-view-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.dark .api-view-btn {
+  border-color: var(--border);
+  color: var(--foreground);
+}
+.dark .api-view-btn:hover {
+  background: var(--accent);
+  opacity: 1;
+}
+.api-view-modal-content {
+  max-width: 640px;
+}
+.api-view-loading,
+.api-view-error {
+  padding: 1rem 0;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  text-align: center;
+}
+.api-view-count {
+  margin-bottom: 0.75rem;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+}
+.api-view-model-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 360px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+.api-view-model {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+}
+.api-view-model-id {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8125rem;
+  color: var(--foreground);
+  word-break: break-all;
+}
+.api-view-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.api-view-stat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+}
+.api-view-stat-label {
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+}
+.api-view-stat-val {
+  font-weight: 600;
+  font-size: 0.9375rem;
+  color: var(--foreground);
+}
 .api-hint {
   display: flex;
   gap: 0.5rem;
@@ -3668,4 +3764,36 @@ body:has(#tabApilog:not(.hidden)) #mainPage > .container {
   color: #3b82f6;
   font-size: 0.75rem;
   font-weight: 600;
+}
+.metrics-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.metrics-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.12);
+  border: 1px solid var(--border);
+  font-size: 0.75rem;
+}
+.metrics-chip-label {
+  color: var(--foreground);
+  opacity: 0.65;
+  font-weight: 500;
+}
+.metrics-chip-value {
+  color: var(--foreground);
+  font-weight: 700;
+}
+.metrics-chip-danger {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+.metrics-chip-danger .metrics-chip-value {
+  color: #ef4444;
 }

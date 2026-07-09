@@ -303,6 +303,16 @@
             </select>
             <small data-i18n="settings.maxPayloadHint"></small>
           </div>
+          <div class="form-group">
+            <label data-i18n="settings.stickyTtl"></label>
+            <select id="stickyPinTtl">
+              <option value="300" data-i18n="settings.stickyTtl5m"></option>
+              <option value="900" data-i18n="settings.stickyTtl15m"></option>
+              <option value="1800" data-i18n="settings.stickyTtl30m"></option>
+              <option value="3600" data-i18n="settings.stickyTtl60m"></option>
+            </select>
+            <small data-i18n="settings.stickyTtlHint"></small>
+          </div>
           <button class="btn btn-primary" id="saveOverUsageBtn" data-i18n="settings.saveUsage"></button>
         </div>
 
@@ -364,6 +374,27 @@
             <input type="password" id="newPassword" data-i18n-placeholder="settings.newPasswordPlaceholder" />
           </div>
           <button class="btn btn-primary" id="changePasswordBtn" data-i18n="settings.changePassword"></button>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><span class="card-title" data-i18n="settings.branding"></span></div>
+          <div class="form-group">
+            <label data-i18n="settings.siteName"></label>
+            <input type="text" id="siteName" placeholder="Kiro-Go" autocomplete="off" />
+            <small data-i18n="settings.siteNameHint"></small>
+          </div>
+          <div class="form-group">
+            <label data-i18n="settings.expiredMessage"></label>
+            <input type="text" id="expiredMessage" autocomplete="off" />
+            <small data-i18n="settings.expiredMessageHint"></small>
+          </div>
+          <div class="form-group">
+            <label data-i18n="settings.quotaMessage"></label>
+            <input type="text" id="quotaMessage" autocomplete="off" />
+            <small data-i18n="settings.quotaMessageHint"></small>
+            <button class="btn btn-primary btn-sm" id="saveBrandingBtn" style="margin-top:0.5rem;"
+              data-i18n="settings.saveBranding"></button>
+          </div>
         </div>
 
         <!-- Proxy (pool + import + fallback, merged) -->
@@ -808,9 +839,34 @@
           <small data-i18n="apiKeys.limitHint"></small>
         </div>
         <div class="form-group">
+          <label data-i18n="apiKeys.rpmLimit"></label>
+          <input type="number" id="apiKeyForm_rpmLimit" min="0" step="1" value="0" />
+          <small data-i18n="apiKeys.rateLimitHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.tpmLimit"></label>
+          <input type="number" id="apiKeyForm_tpmLimit" min="0" step="1" value="0" />
+          <small data-i18n="apiKeys.rateLimitHint"></small>
+        </div>
+        <div class="form-group">
           <label data-i18n="apiKeys.expiresAt"></label>
           <input type="date" id="apiKeyForm_expiresAt" />
           <small data-i18n="apiKeys.expiresAtHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.maxConcurrentIps"></label>
+          <input type="number" id="apiKeyForm_maxConcurrentIps" min="0" step="1" value="0" />
+          <small data-i18n="apiKeys.ipLimitHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.maxTotalIps"></label>
+          <input type="number" id="apiKeyForm_maxTotalIps" min="0" step="1" value="0" />
+          <small data-i18n="apiKeys.ipLimitHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.ipAllowlist"></label>
+          <textarea id="apiKeyForm_ipAllowlist" rows="3" data-i18n-placeholder="apiKeys.ipAllowlistPlaceholder"></textarea>
+          <small data-i18n="apiKeys.ipAllowlistHint"></small>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" id="apiKeyModalCancelBtn" type="button" data-i18n="apiKeys.cancelBtn"></button>
@@ -856,6 +912,31 @@
           <label data-i18n="apiKeys.expiresAt"></label>
           <input type="date" id="apiKeyBulk_expiresAt" />
           <small data-i18n="apiKeys.expiresAtHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.rpmLimit"></label>
+          <input type="number" id="apiKeyBulk_rpmLimit" min="0" step="1" value="0" />
+          <small data-i18n="apiKeys.rateLimitHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.tpmLimit"></label>
+          <input type="number" id="apiKeyBulk_tpmLimit" min="0" step="1" value="0" />
+          <small data-i18n="apiKeys.rateLimitHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.maxConcurrentIps"></label>
+          <input type="number" id="apiKeyBulk_maxConcurrentIps" min="0" step="1" value="0" />
+          <small data-i18n="apiKeys.ipLimitHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.maxTotalIps"></label>
+          <input type="number" id="apiKeyBulk_maxTotalIps" min="0" step="1" value="0" />
+          <small data-i18n="apiKeys.ipLimitHint"></small>
+        </div>
+        <div class="form-group">
+          <label data-i18n="apiKeys.ipAllowlist"></label>
+          <textarea id="apiKeyBulk_ipAllowlist" rows="3" data-i18n-placeholder="apiKeys.ipAllowlistPlaceholder"></textarea>
+          <small data-i18n="apiKeys.ipAllowlistHint"></small>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" id="apiKeyBulkCancelBtn" type="button" data-i18n="apiKeys.cancelBtn"></button>

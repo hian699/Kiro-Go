@@ -5,8 +5,6 @@ import (
 	"time"
 )
 
-const stickyPinTTL = 5 * time.Minute
-
 type pinEntry struct {
 	accountID string
 	expiresAt time.Time
@@ -22,7 +20,7 @@ func (p *AccountPool) SetPin(key [32]byte, accountID string) {
 	if p.pins == nil {
 		p.pins = make(map[[32]byte]pinEntry)
 	}
-	p.pins[key] = pinEntry{accountID: accountID, expiresAt: time.Now().Add(stickyPinTTL)}
+	p.pins[key] = pinEntry{accountID: accountID, expiresAt: time.Now().Add(config.GetStickyPinTTL())}
 }
 
 // GetPinnedForModel returns the pinned account for key only if it is currently
@@ -54,7 +52,7 @@ func (p *AccountPool) GetPinnedForModel(key [32]byte, model string) *config.Acco
 
 	p.pinsMu.Lock()
 	if e, ok := p.pins[key]; ok {
-		e.expiresAt = time.Now().Add(stickyPinTTL)
+		e.expiresAt = time.Now().Add(config.GetStickyPinTTL())
 		p.pins[key] = e
 	}
 	p.pinsMu.Unlock()

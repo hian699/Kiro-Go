@@ -40,6 +40,11 @@ type Handler struct {
 	// tokenRefreshLocks holds one mutex per account ID so a slow token refresh
 	// on one account never blocks refreshes (or requests) for other accounts.
 	tokenRefreshLocks sync.Map // accountID -> *sync.Mutex
+	// rateLimiter enforces per-key RPM/TPM caps with in-memory windows.
+	rateLimiter *rateLimiter
+	// dosGuard enforces pre-auth per-IP RPM and concurrency caps. Disabled unless
+	// the DOS_* env vars are set.
+	dosGuard *dosGuard
 }
 
 // tokenRefreshLock returns the per-account refresh mutex, creating it on first use.
@@ -233,6 +238,8 @@ func NewHandler() *Handler {
 		stopRefresh:     make(chan struct{}),
 		stopStatsSaver:  make(chan struct{}),
 		promptCache:     newPromptCacheTracker(defaultPromptCacheTTL),
+		rateLimiter:     newRateLimiter(),
+		dosGuard:        newDosGuard(),
 	}
 	// 启动后台刷新
 	go h.backgroundRefresh()
@@ -240,6 +247,8 @@ func NewHandler() *Handler {
 	go h.backgroundStatsSaver()
 	// 清理过期的 stored responses（>30 天）
 	go purgeExpiredResponses(responsesDefaultTTL)
+	// 定期清理过期的限流窗口
+	go h.backgroundRateSweep()
 	return h
 }
 
@@ -374,6 +383,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// App-layer DoS guard: pre-auth per-IP RPM + concurrency caps. Liveness paths
+	// are exempt so monitors are never throttled. No-op when DOS_* env unset.
+	if h.dosGuard != nil && !isLivenessPath(path) {
+		release, reject := h.dosGuard.check(r)
+		if reject != nil {
+			writeDosReject(w, reject)
+			return
+		}
+		defer release()
+	}
+
 	// 路由
 	switch {
 	// API 端点（需要验证 API Key）
@@ -408,6 +428,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.apiKeySelfInfo(w, r)
 	case path == "/v1/key/logs" || path == "/key/logs":
 		h.apiKeySelfLogs(w, r)
+	case path == "/api/site":
+		h.apiGetSite(w, r)
 	case path == "/api/event_logging/batch":
 		// Claude Code 遥测端点 - 直接返回 200 OK
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -848,10 +870,11 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 
 	// Stream or non-stream
 	apiKeyID := apiKeyIDFromContext(r.Context())
+	reqIP := clientIP(r)
 	if req.Stream {
-		h.handleClaudeStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, stickyKey)
+		h.handleClaudeStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, stickyKey, reqIP)
 	} else {
-		h.handleClaudeNonStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, stickyKey)
+		h.handleClaudeNonStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, stickyKey, reqIP)
 	}
 }
 
@@ -866,7 +889,7 @@ func logSuspiciousReq(api, model string, inputTokens, outputTokens int, hasTool 
 }
 
 // handleClaudeStream Claude 流式响应
-func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string, stickyKey [32]byte) {
+func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string, stickyKey [32]byte, reqIP string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1245,7 +1268,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 			if !messageStarted {
 				continue
 			}
-			h.recordFailureForApiKey(apiKeyID, "claude", model, 0, err.Error(), startedAt)
+			h.recordFailureForApiKey(apiKeyID, "claude", model, 0, err.Error(), startedAt, reqIP)
 			h.sendSSE(w, flusher, "error", map[string]interface{}{
 				"type":  "error",
 				"error": map[string]string{"type": "api_error", "message": err.Error()},
@@ -1274,7 +1297,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		}
 		outputTokens = estimateClaudeOutputTokens(outputContent, thinkingOutput, toolUses)
 
-		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model, account, "claude", startedAt)
+		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model, account, "claude", startedAt, reqIP)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.SetPin(stickyKey, account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
@@ -1302,14 +1325,14 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 	}
 
 	if lastErr == nil {
-		h.recordFailureForApiKey(apiKeyID, "claude", model, 503, "No available accounts", startedAt)
+		h.recordFailureForApiKey(apiKeyID, "claude", model, 503, "No available accounts", startedAt, reqIP)
 		h.sendClaudeError(w, 503, "api_error", "No available accounts")
 		return
 	}
 
 	status := statusForUpstreamError(lastErr)
 	applyRetryAfterHeader(w, lastErr)
-	h.recordFailureForApiKey(apiKeyID, "claude", model, status, lastErr.Error(), startedAt)
+	h.recordFailureForApiKey(apiKeyID, "claude", model, status, lastErr.Error(), startedAt, reqIP)
 	h.sendClaudeError(w, status, "api_error", lastErr.Error())
 }
 
@@ -1330,6 +1353,25 @@ func (h *Handler) backgroundStatsSaver() {
 			h.saveStats()
 		case <-h.stopStatsSaver:
 			h.saveStats() // 退出前保存一次
+			return
+		}
+	}
+}
+
+// backgroundRateSweep periodically drops stale rate-limit windows so the limiter
+// map stays bounded to recently-active keys. Ticks alongside the stats saver and
+// exits on the same stop signal.
+func (h *Handler) backgroundRateSweep() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			h.rateLimiter.sweep()
+			if h.dosGuard != nil {
+				h.dosGuard.rpm.sweep()
+			}
+		case <-h.stopStatsSaver:
 			return
 		}
 	}
@@ -1378,13 +1420,16 @@ func (h *Handler) recordSuccess(inputTokens, outputTokens int, credits float64) 
 // When apiKeyID is empty (legacy single-key path or unauthenticated path), only the
 // global counters are updated. Persistence errors are logged but do not propagate.
 // model is recorded in the per-request log for the admin API Log view.
-func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTokens int, credits float64, model string, account *config.Account, endpoint string, startedAt time.Time) {
+func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTokens int, credits float64, model string, account *config.Account, endpoint string, startedAt time.Time, reqIP string) {
 	h.recordSuccess(inputTokens, outputTokens, credits)
 
 	keyName, keyMasked := apiKeyLabels(apiKeyID)
 	if apiKeyID != "" {
 		if err := config.RecordApiKeyUsage(apiKeyID, int64(inputTokens+outputTokens), credits); err != nil {
 			logger.Warnf("[ApiKey] failed to record usage for key %s: %v", apiKeyID, err)
+		}
+		if h.rateLimiter != nil {
+			h.rateLimiter.AddTokens(apiKeyID, int64(inputTokens+outputTokens))
 		}
 	}
 
@@ -1404,6 +1449,7 @@ func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTok
 		Model:        model,
 		AccountID:    accountID,
 		AccountEmail: accountEmail,
+		ClientIP:     reqIP,
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 		Credits:      credits,
@@ -1431,7 +1477,7 @@ func durationMs(startedAt time.Time) int64 {
 
 // recordFailureForApiKey is recordFailure + a failure entry in the per-request log so the
 // admin API Log view shows what went wrong (endpoint, model, status code, error detail).
-func (h *Handler) recordFailureForApiKey(apiKeyID, endpoint, model string, statusCode int, errMsg string, startedAt time.Time) {
+func (h *Handler) recordFailureForApiKey(apiKeyID, endpoint, model string, statusCode int, errMsg string, startedAt time.Time, reqIP string) {
 	h.recordFailure()
 	name, masked := apiKeyLabels(apiKeyID)
 	logRequest(RequestLogEntry{
@@ -1441,6 +1487,7 @@ func (h *Handler) recordFailureForApiKey(apiKeyID, endpoint, model string, statu
 		APIKeyName:   name,
 		APIKeyMasked: masked,
 		Model:        model,
+		ClientIP:     reqIP,
 		StatusCode:   statusCode,
 		Error:        errMsg,
 		DurationMs:   durationMs(startedAt),
@@ -1453,7 +1500,7 @@ func (h *Handler) recordFailure() {
 }
 
 // handleClaudeNonStream Claude 非流式响应
-func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string, stickyKey [32]byte) {
+func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string, stickyKey [32]byte, reqIP string) {
 	startedAt := time.Now()
 	excluded := make(map[string]bool)
 	var lastErr error
@@ -1526,7 +1573,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 		}
 		outputTokens = estimateClaudeOutputTokens(finalContent, rawThinkingContent, toolUses)
 
-		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model, account, "claude", startedAt)
+		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model, account, "claude", startedAt, reqIP)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.SetPin(stickyKey, account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
@@ -1567,14 +1614,14 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 	}
 
 	if lastErr == nil {
-		h.recordFailureForApiKey(apiKeyID, "claude", model, 503, "No available accounts", startedAt)
+		h.recordFailureForApiKey(apiKeyID, "claude", model, 503, "No available accounts", startedAt, reqIP)
 		h.sendClaudeError(w, 503, "api_error", "No available accounts")
 		return
 	}
 
 	status := statusForUpstreamError(lastErr)
 	applyRetryAfterHeader(w, lastErr)
-	h.recordFailureForApiKey(apiKeyID, "claude", model, status, lastErr.Error(), startedAt)
+	h.recordFailureForApiKey(apiKeyID, "claude", model, status, lastErr.Error(), startedAt, reqIP)
 	h.sendClaudeError(w, status, "api_error", lastErr.Error())
 }
 
@@ -1623,15 +1670,16 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	stickyKey := openAIStickyKey(&req)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
+	reqIP := clientIP(r)
 	if req.Stream {
-		h.handleOpenAIStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, stickyKey)
+		h.handleOpenAIStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, stickyKey, reqIP)
 	} else {
-		h.handleOpenAINonStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, stickyKey)
+		h.handleOpenAINonStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, stickyKey, reqIP)
 	}
 }
 
 // handleOpenAIStream OpenAI 流式响应
-func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string, stickyKey [32]byte) {
+func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string, stickyKey [32]byte, reqIP string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1951,7 +1999,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 			if !responseStarted {
 				continue
 			}
-			h.recordFailureForApiKey(apiKeyID, "openai", model, 0, err.Error(), startedAt)
+			h.recordFailureForApiKey(apiKeyID, "openai", model, 0, err.Error(), startedAt, reqIP)
 			return
 		}
 
@@ -1979,7 +2027,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 			outputTokens += estimateApproxTokens(tc.Function.Arguments)
 		}
 
-		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model, account, "openai", startedAt)
+		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model, account, "openai", startedAt, reqIP)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.SetPin(stickyKey, account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
@@ -2025,7 +2073,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 }
 
 // handleOpenAINonStream OpenAI 非流式响应
-func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string, stickyKey [32]byte) {
+func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string, stickyKey [32]byte, reqIP string) {
 	startedAt := time.Now()
 	excluded := make(map[string]bool)
 	var lastErr error
@@ -2087,7 +2135,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 		}
 		outputTokens = estimateOpenAIOutputTokens(finalContent, reasoningContent, toolUses)
 
-		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model, account, "openai", startedAt)
+		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits, model, account, "openai", startedAt, reqIP)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.SetPin(stickyKey, account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
@@ -2101,14 +2149,14 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 	}
 
 	if lastErr == nil {
-		h.recordFailureForApiKey(apiKeyID, "openai", model, 503, "No available accounts", startedAt)
+		h.recordFailureForApiKey(apiKeyID, "openai", model, 503, "No available accounts", startedAt, reqIP)
 		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
 		return
 	}
 
 	status := statusForUpstreamError(lastErr)
 	applyRetryAfterHeader(w, lastErr)
-	h.recordFailureForApiKey(apiKeyID, "openai", model, status, lastErr.Error(), startedAt)
+	h.recordFailureForApiKey(apiKeyID, "openai", model, status, lastErr.Error(), startedAt, reqIP)
 	h.sendOpenAIError(w, status, errorTypeForOpenAIStatus(status), lastErr.Error())
 }
 
@@ -2323,6 +2371,9 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "/api-keys/") && strings.HasSuffix(path, "/reset-usage") && r.Method == "POST":
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "/api-keys/"), "/reset-usage")
 		h.apiResetApiKeyUsage(w, r, id)
+	case strings.HasPrefix(path, "/api-keys/") && strings.HasSuffix(path, "/reset-ips") && r.Method == "POST":
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "/api-keys/"), "/reset-ips")
+		h.apiResetApiKeyIPs(w, r, id)
 	case strings.HasPrefix(path, "/api-keys/") && r.Method == "GET":
 		h.apiGetApiKey(w, r, strings.TrimPrefix(path, "/api-keys/"))
 	case strings.HasPrefix(path, "/api-keys/") && r.Method == "PUT":
@@ -3492,15 +3543,28 @@ func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// apiGetSite is a PUBLIC (no-auth) endpoint returning only the display site name,
+// so the login page and portal can rewrite their branding before authentication.
+// It exposes no secrets.
+func (h *Handler) apiGetSite(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]string{"siteName": config.GetSiteName()})
+}
+
 func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
+	siteName, expiredMessage, quotaMessage := config.GetBrandingRaw()
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"apiKey":          config.GetApiKey(),
-		"requireApiKey":   config.IsApiKeyRequired(),
-		"port":            config.GetPort(),
-		"host":            config.GetHost(),
-		"allowOverUsage":  config.GetAllowOverUsage(),
-		"maxPayloadBytes": config.GetMaxPayloadBytes(),
-		"publicBaseURL":   config.GetPublicBaseURL(),
+		"apiKey":              config.GetApiKey(),
+		"requireApiKey":       config.IsApiKeyRequired(),
+		"port":                config.GetPort(),
+		"host":                config.GetHost(),
+		"allowOverUsage":      config.GetAllowOverUsage(),
+		"maxPayloadBytes":     config.GetMaxPayloadBytes(),
+		"stickyPinTtlSeconds": int(config.GetStickyPinTTL() / time.Second),
+		"publicBaseURL":       config.GetPublicBaseURL(),
+		"siteName":            siteName,
+		"expiredMessage":      expiredMessage,
+		"quotaMessage":        quotaMessage,
 	})
 }
 
@@ -3549,12 +3613,16 @@ func (h *Handler) apiUpdatePromptFilter(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ApiKey          *string `json:"apiKey,omitempty"`
-		RequireApiKey   *bool   `json:"requireApiKey,omitempty"`
-		Password        string  `json:"password,omitempty"`
-		AllowOverUsage  *bool   `json:"allowOverUsage,omitempty"`
-		MaxPayloadBytes *int    `json:"maxPayloadBytes,omitempty"`
-		PublicBaseURL   *string `json:"publicBaseURL,omitempty"`
+		ApiKey              *string `json:"apiKey,omitempty"`
+		RequireApiKey       *bool   `json:"requireApiKey,omitempty"`
+		Password            string  `json:"password,omitempty"`
+		AllowOverUsage      *bool   `json:"allowOverUsage,omitempty"`
+		MaxPayloadBytes     *int    `json:"maxPayloadBytes,omitempty"`
+		StickyPinTTLSeconds *int    `json:"stickyPinTtlSeconds,omitempty"`
+		PublicBaseURL       *string `json:"publicBaseURL,omitempty"`
+		SiteName            *string `json:"siteName,omitempty"`
+		ExpiredMessage      *string `json:"expiredMessage,omitempty"`
+		QuotaMessage        *string `json:"quotaMessage,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -3589,8 +3657,36 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// stickyPinTtlSeconds is read per-request by the pool's sticky routing, so the
+	// new value takes effect on the next request — no restart or pool reload needed.
+	if req.StickyPinTTLSeconds != nil {
+		if err := config.UpdateStickyPinTTLSeconds(*req.StickyPinTTLSeconds); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
 	if req.PublicBaseURL != nil {
 		if err := config.UpdatePublicBaseURL(*req.PublicBaseURL); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	if req.SiteName != nil || req.ExpiredMessage != nil || req.QuotaMessage != nil {
+		curSite, curExp, curQuota := config.GetBrandingRaw()
+		if req.SiteName != nil {
+			curSite = *req.SiteName
+		}
+		if req.ExpiredMessage != nil {
+			curExp = *req.ExpiredMessage
+		}
+		if req.QuotaMessage != nil {
+			curQuota = *req.QuotaMessage
+		}
+		if err := config.UpdateBranding(curSite, curExp, curQuota); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return

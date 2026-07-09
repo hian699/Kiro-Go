@@ -71,8 +71,8 @@ func TestGetPinnedRefreshesTTLOnHit(t *testing.T) {
 	if p.GetPinnedForModel(key, "model-x") == nil {
 		t.Fatal("expected hit")
 	}
-	if p.pins[key].expiresAt.Before(time.Now().Add(stickyPinTTL - time.Minute)) {
-		t.Fatal("expected TTL to be refreshed toward stickyPinTTL")
+	if p.pins[key].expiresAt.Before(time.Now().Add(config.GetStickyPinTTL() - time.Minute)) {
+		t.Fatal("expected TTL to be refreshed toward the configured sticky pin TTL")
 	}
 }
 

@@ -98,7 +98,7 @@ func TestClaudeNonStreamRetriesNextAccountAfterPreResponseFailure(t *testing.T) 
 	}
 
 	rec := httptest.NewRecorder()
-	h.handleClaudeNonStream(rec, payload, "claude-sonnet-4.5", false, claudeThinkingResponseOptions{}, 1, nil, "", [32]byte{})
+	h.handleClaudeNonStream(rec, payload, "claude-sonnet-4.5", false, claudeThinkingResponseOptions{}, 1, nil, "", [32]byte{}, "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected retry to succeed, status=%d body=%s", rec.Code, rec.Body.String())
@@ -218,28 +218,28 @@ func TestResolveClaudeThinkingModeHonorsRequestThinking(t *testing.T) {
 			name:         "adaptive request enables thinking",
 			model:        "claude-sonnet-4.6",
 			thinking:     &ClaudeThinkingConfig{Type: "adaptive"},
-			wantModel:    "claude-sonnet-4.6",
+			wantModel:    "claude-sonnet-4-6",
 			wantThinking: true,
 		},
 		{
 			name:         "enabled request enables thinking",
 			model:        "claude-opus-4.5",
 			thinking:     &ClaudeThinkingConfig{Type: "enabled", BudgetTokens: 2048},
-			wantModel:    "claude-opus-4.5",
+			wantModel:    "claude-opus-4-5",
 			wantThinking: true,
 		},
 		{
 			name:         "disabled request keeps thinking off",
 			model:        "claude-opus-4.7",
 			thinking:     &ClaudeThinkingConfig{Type: "disabled"},
-			wantModel:    "claude-opus-4.7",
+			wantModel:    "claude-opus-4-7",
 			wantThinking: false,
 		},
 		{
 			name:         "suffix remains supported when thinking is disabled",
 			model:        "claude-sonnet-4.5-thinking",
 			thinking:     &ClaudeThinkingConfig{Type: "disabled"},
-			wantModel:    "claude-sonnet-4.5",
+			wantModel:    "claude-sonnet-4-5",
 			wantThinking: true,
 		},
 	}

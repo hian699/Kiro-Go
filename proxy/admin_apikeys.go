@@ -26,23 +26,40 @@ type apiKeyView struct {
 	TokensUsed    int64   `json:"tokensUsed"`
 	CreditsUsed   float64 `json:"creditsUsed"`
 	RequestsCount int64   `json:"requestsCount"`
+
+	MaxConcurrentIPs int      `json:"maxConcurrentIps,omitempty"`
+	MaxTotalIPs      int      `json:"maxTotalIps,omitempty"`
+	IPAllowlist      []string `json:"ipAllowlist,omitempty"`
+	ConcurrentIPs    int      `json:"concurrentIps"`
+	TotalIPs         int      `json:"totalIps"`
+
+	RPMLimit int   `json:"rpmLimit,omitempty"`
+	TPMLimit int64 `json:"tpmLimit,omitempty"`
 }
 
 func toApiKeyView(e config.ApiKeyEntry) apiKeyView {
+	conc, total := config.ApiKeyIPStats(e, ipActiveWindow)
 	return apiKeyView{
-		ID:            e.ID,
-		Name:          e.Name,
-		KeyMasked:     config.MaskApiKey(e.Key),
-		Enabled:       e.Enabled,
-		Migrated:      e.Migrated,
-		CreatedAt:     e.CreatedAt,
-		LastUsedAt:    e.LastUsedAt,
-		ExpiresAt:     e.ExpiresAt,
-		TokenLimit:    e.TokenLimit,
-		CreditLimit:   e.CreditLimit,
-		TokensUsed:    e.TokensUsed,
-		CreditsUsed:   e.CreditsUsed,
-		RequestsCount: e.RequestsCount,
+		ID:               e.ID,
+		Name:             e.Name,
+		KeyMasked:        config.MaskApiKey(e.Key),
+		Enabled:          e.Enabled,
+		Migrated:         e.Migrated,
+		CreatedAt:        e.CreatedAt,
+		LastUsedAt:       e.LastUsedAt,
+		ExpiresAt:        e.ExpiresAt,
+		TokenLimit:       e.TokenLimit,
+		CreditLimit:      e.CreditLimit,
+		TokensUsed:       e.TokensUsed,
+		CreditsUsed:      e.CreditsUsed,
+		RequestsCount:    e.RequestsCount,
+		MaxConcurrentIPs: e.MaxConcurrentIPs,
+		MaxTotalIPs:      e.MaxTotalIPs,
+		IPAllowlist:      e.IPAllowlist,
+		ConcurrentIPs:    conc,
+		TotalIPs:         total,
+		RPMLimit:         e.RPMLimit,
+		TPMLimit:         e.TPMLimit,
 	}
 }
 
@@ -72,6 +89,8 @@ type apiKeyCreateRequest struct {
 	TokenLimit  int64   `json:"tokenLimit,omitempty"`
 	CreditLimit float64 `json:"creditLimit,omitempty"`
 	ExpiresAt   int64   `json:"expiresAt,omitempty"`
+	RPMLimit    int     `json:"rpmLimit,omitempty"`
+	TPMLimit    int64   `json:"tpmLimit,omitempty"`
 }
 
 func (h *Handler) apiCreateApiKey(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +135,8 @@ func createApiKeyFromRequest(req apiKeyCreateRequest) (config.ApiKeyEntry, error
 		TokenLimit:  req.TokenLimit,
 		CreditLimit: req.CreditLimit,
 		ExpiresAt:   req.ExpiresAt,
+		RPMLimit:    req.RPMLimit,
+		TPMLimit:    req.TPMLimit,
 	})
 }
 
@@ -126,6 +147,12 @@ type apiKeyBulkCreateRequest struct {
 	TokenLimit  int64   `json:"tokenLimit,omitempty"`
 	CreditLimit float64 `json:"creditLimit,omitempty"`
 	ExpiresAt   int64   `json:"expiresAt,omitempty"`
+
+	MaxConcurrentIPs int      `json:"maxConcurrentIps,omitempty"`
+	MaxTotalIPs      int      `json:"maxTotalIps,omitempty"`
+	IPAllowlist      []string `json:"ipAllowlist,omitempty"`
+	RPMLimit         int      `json:"rpmLimit,omitempty"`
+	TPMLimit         int64    `json:"tpmLimit,omitempty"`
 }
 
 func (h *Handler) apiBulkCreateApiKeys(w http.ResponseWriter, r *http.Request) {
@@ -153,12 +180,17 @@ func (h *Handler) apiBulkCreateApiKeys(w http.ResponseWriter, r *http.Request) {
 	entries := make([]config.ApiKeyEntry, req.Count)
 	for i := range entries {
 		entries[i] = config.ApiKeyEntry{
-			Name:        prefix + " " + strconv.Itoa(i+1),
-			Key:         config.GenerateApiKeyValue(),
-			Enabled:     enabled,
-			TokenLimit:  req.TokenLimit,
-			CreditLimit: req.CreditLimit,
-			ExpiresAt:   req.ExpiresAt,
+			Name:             prefix + " " + strconv.Itoa(i+1),
+			Key:              config.GenerateApiKeyValue(),
+			Enabled:          enabled,
+			TokenLimit:       req.TokenLimit,
+			CreditLimit:      req.CreditLimit,
+			ExpiresAt:        req.ExpiresAt,
+			MaxConcurrentIPs: req.MaxConcurrentIPs,
+			MaxTotalIPs:      req.MaxTotalIPs,
+			IPAllowlist:      req.IPAllowlist,
+			RPMLimit:         req.RPMLimit,
+			TPMLimit:         req.TPMLimit,
 		}
 	}
 	created, err := config.AddApiKeys(entries)
@@ -209,6 +241,13 @@ type apiKeyUpdateRequest struct {
 	TokenLimit  *int64   `json:"tokenLimit,omitempty"`
 	CreditLimit *float64 `json:"creditLimit,omitempty"`
 	ExpiresAt   *int64   `json:"expiresAt,omitempty"`
+
+	MaxConcurrentIPs *int      `json:"maxConcurrentIps,omitempty"`
+	MaxTotalIPs      *int      `json:"maxTotalIps,omitempty"`
+	IPAllowlist      *[]string `json:"ipAllowlist,omitempty"`
+
+	RPMLimit *int   `json:"rpmLimit,omitempty"`
+	TPMLimit *int64 `json:"tpmLimit,omitempty"`
 }
 
 func (h *Handler) apiUpdateApiKey(w http.ResponseWriter, r *http.Request, id string) {
@@ -244,6 +283,21 @@ func (h *Handler) apiUpdateApiKey(w http.ResponseWriter, r *http.Request, id str
 	}
 	if req.ExpiresAt != nil {
 		patch.ExpiresAt = *req.ExpiresAt
+	}
+	if req.MaxConcurrentIPs != nil {
+		patch.MaxConcurrentIPs = *req.MaxConcurrentIPs
+	}
+	if req.MaxTotalIPs != nil {
+		patch.MaxTotalIPs = *req.MaxTotalIPs
+	}
+	if req.IPAllowlist != nil {
+		patch.IPAllowlist = *req.IPAllowlist
+	}
+	if req.RPMLimit != nil {
+		patch.RPMLimit = *req.RPMLimit
+	}
+	if req.TPMLimit != nil {
+		patch.TPMLimit = *req.TPMLimit
 	}
 
 	if err := config.UpdateApiKey(id, patch); err != nil {
@@ -464,6 +518,26 @@ func (h *Handler) apiDeleteApiKey(w http.ResponseWriter, r *http.Request, id str
 
 func (h *Handler) apiResetApiKeyUsage(w http.ResponseWriter, r *http.Request, id string) {
 	if err := config.ResetApiKeyUsage(id); err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if h.rateLimiter != nil {
+		h.rateLimiter.reset(id)
+	}
+	updated := config.GetApiKeyEntry(id)
+	if updated == nil {
+		json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"apiKey":  toApiKeyView(*updated),
+	})
+}
+
+func (h *Handler) apiResetApiKeyIPs(w http.ResponseWriter, r *http.Request, id string) {
+	if err := config.ResetApiKeyIPs(id); err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return

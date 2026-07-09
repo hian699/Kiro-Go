@@ -140,8 +140,8 @@ func TestAuthenticateRejectsOverTokenLimit(t *testing.T) {
 	if ae.status != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d", ae.status)
 	}
-	if !strings.Contains(ae.message, "token limit") {
-		t.Fatalf("expected token limit message, got %q", ae.message)
+	if !strings.Contains(ae.message, config.GetQuotaMessage()) {
+		t.Fatalf("expected quota message, got %q", ae.message)
 	}
 }
 
@@ -171,8 +171,8 @@ func TestAuthenticateRejectsOverCreditLimit(t *testing.T) {
 	if ae.status != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d", ae.status)
 	}
-	if !strings.Contains(ae.message, "credit limit") {
-		t.Fatalf("expected credit limit message, got %q", ae.message)
+	if !strings.Contains(ae.message, config.GetQuotaMessage()) {
+		t.Fatalf("expected quota message, got %q", ae.message)
 	}
 }
 
@@ -274,7 +274,7 @@ func TestRecordSuccessForApiKeyUpdatesEntry(t *testing.T) {
 	}
 
 	h := &Handler{}
-	h.recordSuccessForApiKey(created.ID, 25, 30, 0.75, "claude-test", nil, "claude", time.Time{})
+	h.recordSuccessForApiKey(created.ID, 25, 30, 0.75, "claude-test", nil, "claude", time.Time{}, "1.2.3.4")
 
 	got := config.GetApiKeyEntry(created.ID)
 	if got == nil {
@@ -299,7 +299,7 @@ func TestRecordSuccessForApiKeyEmptyIDIsNoop(t *testing.T) {
 	}
 
 	h := &Handler{}
-	h.recordSuccessForApiKey("", 100, 100, 1, "claude-test", nil, "claude", time.Time{})
+	h.recordSuccessForApiKey("", 100, 100, 1, "claude-test", nil, "claude", time.Time{}, "")
 	got := config.GetApiKeyEntry(created.ID)
 	if got == nil {
 		t.Fatalf("entry missing")
