@@ -869,16 +869,22 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	cacheProfile := h.promptCache.BuildClaudeProfile(effectiveReq, estimatedInputTokens)
 	stickyKey := claudeStickyKey(effectiveReq)
 
-	// 转换请求
-	kiroPayload := ClaudeToKiro(&req, thinking)
+	// 转换请求. Build a rich payload (structured tool history) tried first and a
+	// safe payload (flattened) for automatic fallback if the upstream rejects the
+	// richer one. When KeepToolHistory is off, both are the flattened form.
+	safePayload := ClaudeToKiro(&req, thinking)
+	richPayload := safePayload
+	if config.GetKeepToolHistory() {
+		richPayload = ClaudeToKiroWithHistoryMode(&req, thinking, true)
+	}
 
 	// Stream or non-stream
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	reqIP := clientIP(r)
 	if req.Stream {
-		h.handleClaudeStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, stickyKey, reqIP)
+		h.handleClaudeStream(w, richPayload, safePayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, stickyKey, reqIP)
 	} else {
-		h.handleClaudeNonStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, stickyKey, reqIP)
+		h.handleClaudeNonStream(w, richPayload, safePayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, stickyKey, reqIP)
 	}
 }
 
@@ -893,7 +899,7 @@ func logSuspiciousReq(api, model string, inputTokens, outputTokens int, hasTool 
 }
 
 // handleClaudeStream Claude 流式响应
-func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string, stickyKey [32]byte, reqIP string) {
+func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload, safePayload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string, stickyKey [32]byte, reqIP string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1264,7 +1270,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 			},
 		}
 
-		err := CallKiroAPI(account, payload, callback)
+		err := callWithHistoryFallback(account, payload, safePayload, callback, func() bool { return messageStarted })
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -1504,7 +1510,7 @@ func (h *Handler) recordFailure() {
 }
 
 // handleClaudeNonStream Claude 非流式响应
-func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string, stickyKey [32]byte, reqIP string) {
+func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload, safePayload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string, stickyKey [32]byte, reqIP string) {
 	startedAt := time.Now()
 	excluded := make(map[string]bool)
 	var lastErr error
@@ -1552,7 +1558,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 			},
 		}
 
-		err := CallKiroAPI(account, payload, callback)
+		err := callWithHistoryFallback(account, payload, safePayload, callback, func() bool { return false })
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -1670,20 +1676,24 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	req.Model = actualModel
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(&req)
 
-	kiroPayload := OpenAIToKiro(&req, thinking)
+	safePayload := OpenAIToKiro(&req, thinking)
+	richPayload := safePayload
+	if config.GetKeepToolHistory() {
+		richPayload = OpenAIToKiroWithHistoryMode(&req, thinking, true)
+	}
 	stickyKey := openAIStickyKey(&req)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	reqIP := clientIP(r)
 	if req.Stream {
-		h.handleOpenAIStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, stickyKey, reqIP)
+		h.handleOpenAIStream(w, richPayload, safePayload, req.Model, thinking, estimatedInputTokens, apiKeyID, stickyKey, reqIP)
 	} else {
-		h.handleOpenAINonStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, stickyKey, reqIP)
+		h.handleOpenAINonStream(w, richPayload, safePayload, req.Model, thinking, estimatedInputTokens, apiKeyID, stickyKey, reqIP)
 	}
 }
 
 // handleOpenAIStream OpenAI 流式响应
-func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string, stickyKey [32]byte, reqIP string) {
+func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload, safePayload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string, stickyKey [32]byte, reqIP string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1995,7 +2005,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 			},
 		}
 
-		err := CallKiroAPI(account, payload, callback)
+		err := callWithHistoryFallback(account, payload, safePayload, callback, func() bool { return responseStarted })
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -2077,7 +2087,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 }
 
 // handleOpenAINonStream OpenAI 非流式响应
-func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string, stickyKey [32]byte, reqIP string) {
+func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload, safePayload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string, stickyKey [32]byte, reqIP string) {
 	startedAt := time.Now()
 	excluded := make(map[string]bool)
 	var lastErr error
@@ -2117,7 +2127,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 			},
 		}
 
-		err := CallKiroAPI(account, payload, callback)
+		err := callWithHistoryFallback(account, payload, safePayload, callback, func() bool { return false })
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -3564,6 +3574,7 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"host":                config.GetHost(),
 		"allowOverUsage":      config.GetAllowOverUsage(),
 		"maxPayloadBytes":     config.GetMaxPayloadBytes(),
+		"keepToolHistory":     config.GetKeepToolHistory(),
 		"stickyPinTtlSeconds": int(config.GetStickyPinTTL() / time.Second),
 		"publicBaseURL":       config.GetPublicBaseURL(),
 		"siteName":            siteName,
@@ -3622,6 +3633,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		Password            string  `json:"password,omitempty"`
 		AllowOverUsage      *bool   `json:"allowOverUsage,omitempty"`
 		MaxPayloadBytes     *int    `json:"maxPayloadBytes,omitempty"`
+		KeepToolHistory     *bool   `json:"keepToolHistory,omitempty"`
 		StickyPinTTLSeconds *int    `json:"stickyPinTtlSeconds,omitempty"`
 		PublicBaseURL       *string `json:"publicBaseURL,omitempty"`
 		SiteName            *string `json:"siteName,omitempty"`
@@ -3655,6 +3667,16 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// value takes effect on the next request — no restart or pool reload needed.
 	if req.MaxPayloadBytes != nil {
 		if err := config.UpdateMaxPayloadBytes(*req.MaxPayloadBytes); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	// keepToolHistory is read per-request when building the payload, so the new
+	// value takes effect on the next request — no restart or pool reload needed.
+	if req.KeepToolHistory != nil {
+		if err := config.UpdateKeepToolHistory(*req.KeepToolHistory); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return

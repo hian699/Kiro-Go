@@ -108,24 +108,28 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	openaiReq.Model = actualModel
 
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(openaiReq)
-	kiroPayload := OpenAIToKiro(openaiReq, thinking)
+	safePayload := OpenAIToKiro(openaiReq, thinking)
+	richPayload := safePayload
+	if config.GetKeepToolHistory() {
+		richPayload = OpenAIToKiroWithHistoryMode(openaiReq, thinking, true)
+	}
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	reqIP := clientIP(r)
 	respID := generateResponseID()
 
 	if req.Stream {
-		h.handleResponsesStream(w, kiroPayload, actualModel, thinking, estimatedInputTokens,
+		h.handleResponsesStream(w, richPayload, safePayload, actualModel, thinking, estimatedInputTokens,
 			apiKeyID, respID, &req, storedInputCopy, storeResponse, reqIP)
 		return
 	}
 
-	h.handleResponsesNonStream(w, kiroPayload, actualModel, thinking, estimatedInputTokens,
+	h.handleResponsesNonStream(w, richPayload, safePayload, actualModel, thinking, estimatedInputTokens,
 		apiKeyID, respID, &req, storedInputCopy, storeResponse, reqIP)
 }
 
 func (h *Handler) handleResponsesNonStream(
-	w http.ResponseWriter, payload *KiroPayload, model string, thinking bool,
+	w http.ResponseWriter, payload, safePayload *KiroPayload, model string, thinking bool,
 	estimatedInputTokens int, apiKeyID, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool, reqIP string,
 ) {
@@ -167,7 +171,7 @@ func (h *Handler) handleResponsesNonStream(
 			},
 		}
 
-		err := CallKiroAPI(account, payload, callback)
+		err := callWithHistoryFallback(account, payload, safePayload, callback, func() bool { return false })
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -275,7 +279,7 @@ func buildResponsesObject(
 }
 
 func (h *Handler) handleResponsesStream(
-	w http.ResponseWriter, payload *KiroPayload, model string, thinking bool,
+	w http.ResponseWriter, payload, safePayload *KiroPayload, model string, thinking bool,
 	estimatedInputTokens int, apiKeyID, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool, reqIP string,
 ) {
@@ -473,7 +477,7 @@ func (h *Handler) handleResponsesStream(
 			},
 		}
 
-		err := CallKiroAPI(account, payload, callback)
+		err := callWithHistoryFallback(account, payload, safePayload, callback, func() bool { return responseStarted })
 		if err != nil {
 			if !responseStarted {
 				lastErr = err

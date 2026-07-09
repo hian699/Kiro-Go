@@ -294,6 +294,13 @@
             <small data-i18n="settings.allowOverUsageHint"></small>
           </div>
           <div class="form-group">
+            <label class="flex items-center gap-2">
+              <span class="switch"><input type="checkbox" id="keepToolHistory" checked /><span class="slider"></span></span>
+              <span data-i18n="settings.keepToolHistory"></span>
+            </label>
+            <small data-i18n="settings.keepToolHistoryHint"></small>
+          </div>
+          <div class="form-group">
             <label data-i18n="settings.maxPayload"></label>
             <select id="maxPayloadBytes">
               <option value="921600" data-i18n="settings.maxPayloadConservative"></option>
@@ -626,7 +633,6 @@
             </div>
           </div>
           <p class="help-block" data-i18n="apilog.hint"></p>
-          <div class="apilog-summary" id="apiLogSummary"></div>
           <div class="metrics-summary" id="metricsSummary"></div>
           <div class="table-scroll">
             <table class="data-table" id="apiLogTable">

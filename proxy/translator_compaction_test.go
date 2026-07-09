@@ -87,9 +87,13 @@ func TestClaudeToKiroFlattensHistoryToolCyclesForCompaction(t *testing.T) {
 		}
 	}
 	// Tool identity must be attributed on the user (result) side, never authored
-	// by the assistant.
-	if !strings.Contains(combined, "[exec_command]") {
-		t.Fatalf("expected tool results to be attributed to exec_command on the user side, got:\n%s", combined)
+	// by the assistant. The attribution now also carries the invocation args so the
+	// model retains evidence of WHAT each historical tool call asked for.
+	if !strings.Contains(combined, "[exec_command(") {
+		t.Fatalf("expected tool results attributed to exec_command with args on the user side, got:\n%s", combined)
+	}
+	if !strings.Contains(combined, `"cmd":"make"`) || !strings.Contains(combined, `"cmd":"test"`) {
+		t.Fatalf("expected narrated tool-call args to survive, got:\n%s", combined)
 	}
 }
 

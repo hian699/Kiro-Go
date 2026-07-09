@@ -61,9 +61,13 @@ func TestNoToolInvocationTextInAssistantHistory(t *testing.T) {
 			t.Fatalf("tool output %q lost from history", marker)
 		}
 	}
-	// Tool identity should be attributed on the user side.
-	if !strings.Contains(combined, "[exec_command]") {
-		t.Fatalf("expected tool results attributed to exec_command on the user side")
+	// Tool identity should be attributed on the user side, now including the
+	// invocation args so the model keeps evidence of what each call requested.
+	if !strings.Contains(combined, "[exec_command(") {
+		t.Fatalf("expected tool results attributed to exec_command with args on the user side")
+	}
+	if !strings.Contains(combined, `"cmd":"step 0"`) {
+		t.Fatalf("expected narrated tool-call args to survive on the user side")
 	}
 }
 

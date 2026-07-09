@@ -223,7 +223,18 @@ type ClaudeUsage struct {
 
 const maxToolDescLen = 10237
 
+// ClaudeToKiro builds the upstream payload using the flattened "safe" history
+// mode (at most one active structured tool turn). It reads the configured
+// KeepToolHistory preference; use ClaudeToKiroWithHistoryMode to force a mode
+// (the handlers build both a rich and a safe payload for automatic fallback).
 func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
+	return ClaudeToKiroWithHistoryMode(req, thinking, false)
+}
+
+// ClaudeToKiroWithHistoryMode builds the upstream payload. When keepPaired is
+// true, correctly-paired tool cycles in history keep their structured form (see
+// sanitizeKiroHistory); when false, all but the active tool turn are flattened.
+func ClaudeToKiroWithHistoryMode(req *ClaudeRequest, thinking bool, keepPaired bool) *KiroPayload {
 	modelID := MapModel(req.Model)
 	origin := "AI_EDITOR"
 
@@ -307,9 +318,9 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	// Flatten structured tool calls/results that live in history; upstream only
 	// accepts a single active tool turn (last assistant toolUses ⟺ current toolResults).
 	if keepCurrentToolResults {
-		history = sanitizeKiroHistory(history, currentToolResultIDs)
+		history = sanitizeKiroHistory(history, currentToolResultIDs, keepPaired)
 	} else {
-		history = sanitizeKiroHistory(history, nil)
+		history = sanitizeKiroHistory(history, nil, keepPaired)
 	}
 
 	// 构建最终内容
@@ -809,12 +820,20 @@ func convertClaudeTools(tools []ClaudeTool) ([]KiroToolWrapper, map[string]strin
 
 	result := make([]KiroToolWrapper, 0, len(tools))
 	nameMap := make(map[string]string)
+	used := make(map[string]bool)
 	for _, tool := range tools {
 		desc := tool.Description
 		if len(desc) > maxToolDescLen {
 			desc = desc[:maxToolDescLen] + "..."
 		}
-		sanitized := shortenToolName(sanitizeToolName(tool.Name))
+		// Shorten BEFORE sanitizing: the MCP-aware shortener needs the raw
+		// mcp__server__tool namespace separators to collapse a long name, and
+		// sanitizeToolName only ever removes characters, so the resulting
+		// camelCase name still fits the 64-char ceiling. (Doing it the other way
+		// around stripped the underscores first, so the mcp__ branch never fired
+		// and long MCP tools were hard-truncated at 64 bytes — which collided.)
+		sanitized := sanitizeToolName(shortenToolName(tool.Name))
+		sanitized = uniqueToolName(sanitized, tool.Name, used)
 		if sanitized != tool.Name {
 			nameMap[sanitized] = tool.Name
 		}
@@ -952,6 +971,31 @@ func shortenToolName(name string) string {
 		}
 	}
 	return name[:64]
+}
+
+// uniqueToolName guarantees the sanitized name is unique within one request.
+// Distinct client tool names can collapse to the same sanitized form (e.g. two
+// long MCP tools truncated to the same 64 bytes, or names differing only by a
+// stripped separator). Sending duplicate tool names makes the upstream — and the
+// model — unable to tell the tools apart, so a collision is disambiguated with a
+// short numeric suffix. The mapping back to the original name is recorded by the
+// caller against whichever unique form we return here.
+func uniqueToolName(sanitized, original string, used map[string]bool) string {
+	if sanitized == "" {
+		sanitized = "tool"
+	}
+	candidate := sanitized
+	for i := 2; used[candidate]; i++ {
+		suffix := fmt.Sprintf("%d", i)
+		base := sanitized
+		// Keep within the 64-char ceiling when appending the suffix.
+		if len(base)+len(suffix) > 64 {
+			base = base[:64-len(suffix)]
+		}
+		candidate = base + suffix
+	}
+	used[candidate] = true
+	return candidate
 }
 
 // ==================== Kiro -> Claude 转换 ====================
@@ -1109,7 +1153,16 @@ type OpenAIUsage struct {
 
 // ==================== OpenAI -> Kiro 转换 ====================
 
+// OpenAIToKiro builds the upstream payload using the flattened "safe" history
+// mode. Use OpenAIToKiroWithHistoryMode to force a mode (handlers build both a
+// rich and a safe payload for automatic fallback).
 func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
+	return OpenAIToKiroWithHistoryMode(req, thinking, false)
+}
+
+// OpenAIToKiroWithHistoryMode builds the upstream payload. When keepPaired is
+// true, correctly-paired tool cycles in history keep their structured form.
+func OpenAIToKiroWithHistoryMode(req *OpenAIRequest, thinking bool, keepPaired bool) *KiroPayload {
 	modelID := MapModel(req.Model)
 	origin := "AI_EDITOR"
 
@@ -1252,9 +1305,9 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 	keepCurrentToolResults := currentToolResultsMatchLastAssistant(history, currentToolResultIDs)
 
 	if keepCurrentToolResults {
-		history = sanitizeKiroHistory(history, currentToolResultIDs)
+		history = sanitizeKiroHistory(history, currentToolResultIDs, keepPaired)
 	} else {
-		history = sanitizeKiroHistory(history, nil)
+		history = sanitizeKiroHistory(history, nil, keepPaired)
 	}
 
 	// 构建最终内容
@@ -1423,8 +1476,17 @@ func currentToolResultsMatchLastAssistant(history []KiroHistoryMessage, currentT
 	if last.AssistantResponseMessage == nil || len(last.AssistantResponseMessage.ToolUses) == 0 {
 		return false
 	}
-	for _, tu := range last.AssistantResponseMessage.ToolUses {
-		if !currentToolResultIDs[tu.ToolUseID] {
+	return toolUsesCoveredBy(last.AssistantResponseMessage.ToolUses, currentToolResultIDs)
+}
+
+// toolUsesCoveredBy reports whether every tool use's ID appears in the given set
+// of answered tool-result IDs.
+func toolUsesCoveredBy(toolUses []KiroToolUse, resultIDs map[string]bool) bool {
+	if len(toolUses) == 0 {
+		return false
+	}
+	for _, tu := range toolUses {
+		if !resultIDs[tu.ToolUseID] {
 			return false
 		}
 	}
@@ -1453,17 +1515,26 @@ func stripPollutedToolCallText(content string) string {
 }
 
 // narrateToolResults renders structured tool results as plain text for a user
-// history turn. Each result is attributed to its originating tool call (by name)
-// when that mapping is known, so the model retains the tool's identity without
-// any assistant-side tool-invocation syntax to imitate.
+// history turn. Each result is attributed to its originating tool call by name
+// AND by the arguments the assistant passed, so the model retains both the
+// tool's identity and what it was asked to do — without any assistant-side
+// tool-invocation syntax to imitate.
+//
+// The arguments matter for orchestration tools (Task/Workflow/agent spawns)
+// whose behavior is defined entirely by their input: narrating only "[Task]
+// <output>" tells the model a Task ran but not that the assistant chose to
+// delegate a specific sub-task, erasing the delegation pattern the model would
+// otherwise continue. Rendering "[Task(prompt=...)] <output>" preserves that
+// pattern. Inputs are compacted and length-capped so history stays small.
 //
 // IMPORTANT: tool activity must never be narrated into ASSISTANT turns. Earlier
 // versions wrote "[Called tool X with input ...]" into assistant content, which
 // trained the model (via dozens of in-context examples) to emit that literal
 // text instead of issuing real structured tool calls. All tool narration lives
 // in user "Tool results" turns, which the model reads but never authors, so it
-// has no invocation pattern to copy.
-func narrateToolResults(toolResults []KiroToolResult, names map[string]string) string {
+// has no invocation pattern to copy. Rendering the inputs HERE (user turn) is
+// safe for the same reason: the model never authors this text.
+func narrateToolResults(toolResults []KiroToolResult, names map[string]string, inputs map[string]map[string]interface{}) string {
 	if len(toolResults) == 0 {
 		return ""
 	}
@@ -1479,8 +1550,13 @@ func narrateToolResults(toolResults []KiroToolResult, names map[string]string) s
 		if strings.TrimSpace(body) == "" {
 			body = "(no output)"
 		}
-		if name := names[tr.ToolUseID]; name != "" {
-			parts = append(parts, fmt.Sprintf("[%s] %s", name, body))
+		name := names[tr.ToolUseID]
+		if name != "" {
+			if arg := compactToolInput(inputs[tr.ToolUseID]); arg != "" {
+				parts = append(parts, fmt.Sprintf("[%s(%s)] %s", name, arg, body))
+			} else {
+				parts = append(parts, fmt.Sprintf("[%s] %s", name, body))
+			}
 		} else {
 			parts = append(parts, body)
 		}
@@ -1489,6 +1565,32 @@ func narrateToolResults(toolResults []KiroToolResult, names map[string]string) s
 		return ""
 	}
 	return toolResultsContinuationPrefix + "\n\n" + strings.Join(parts, "\n\n")
+}
+
+// maxNarratedInputLen caps the serialized tool-input summary rendered into a
+// history "Tool results" turn, so replaying a long agentic loop does not bloat
+// the payload with full argument blobs (which also count toward the token cap).
+const maxNarratedInputLen = 500
+
+// compactToolInput renders a tool's input arguments as a single compact line for
+// history narration. Returns "" when there are no arguments. The output is
+// length-capped (maxNarratedInputLen) on a rune boundary so it never bloats the
+// payload or produces invalid UTF-8.
+func compactToolInput(input map[string]interface{}) string {
+	if len(input) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return ""
+	}
+	s := string(raw)
+	// Collapse internal whitespace/newlines so the summary stays on one line.
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > maxNarratedInputLen {
+		s = string(r[:maxNarratedInputLen]) + "…"
+	}
+	return s
 }
 
 // joinHistoryText combines an existing message body with narrated tool text.
@@ -1514,40 +1616,87 @@ func joinHistoryText(existing, narrated string) string {
 // currentToolResultIDs is the set of toolUseId values carried by the current
 // (outgoing) message. When the last history entry is an assistant message whose
 // tool uses are fully covered by that set, its structured toolUses are kept.
-func sanitizeKiroHistory(history []KiroHistoryMessage, currentToolResultIDs map[string]bool) []KiroHistoryMessage {
+//
+// keepPaired relaxes the "at most one structured turn" rule: when true, every
+// assistant turn whose toolUses are fully answered by the immediately following
+// user turn's toolResults keeps its structured form (and that user turn keeps its
+// structured toolResults). This gives agentic clients in-context evidence of the
+// invocation→result pattern so they keep issuing structured tool calls. Orphaned
+// or unpaired structured data is still flattened to text in both modes, since the
+// upstream rejects it. The request handlers fall back to keepPaired=false if the
+// upstream rejects the richer payload, so this is safe to enable.
+func sanitizeKiroHistory(history []KiroHistoryMessage, currentToolResultIDs map[string]bool, keepPaired bool) []KiroHistoryMessage {
 	if len(history) == 0 {
 		return history
 	}
 
-	// Map every tool-use ID to its tool name across all assistant turns, so a
-	// user "Tool results" turn can attribute each result to its originating tool
-	// even after the structured toolUses are stripped from the assistant turn.
+	// Map every tool-use ID to its tool name AND input args across all assistant
+	// turns, so a user "Tool results" turn can attribute each result to its
+	// originating call — including WHAT the assistant asked it to do — even after
+	// the structured toolUses are stripped from the assistant turn. Preserving the
+	// input args (not just the tool name) matters for orchestration tools like
+	// Task/Workflow whose behavior depends entirely on their arguments: narrating
+	// only the output leaves the model with "a Task produced this" but no evidence
+	// of what a Task invocation looks like, weakening its pattern for issuing new
+	// ones. The args live on the user "Tool results" turn (read, never authored),
+	// so this does not reintroduce the assistant-side narration pollution.
 	toolNames := make(map[string]string)
+	toolInputs := make(map[string]map[string]interface{})
 	for i := range history {
 		if a := history[i].AssistantResponseMessage; a != nil {
 			for _, tu := range a.ToolUses {
 				if tu.ToolUseID != "" && tu.Name != "" {
 					toolNames[tu.ToolUseID] = tu.Name
+					if len(tu.Input) > 0 {
+						toolInputs[tu.ToolUseID] = tu.Input
+					}
 				}
 			}
 		}
 	}
 
-	// Determine whether the last history assistant turn is the "active" tool turn
-	// answered by the current message. If so, its structured toolUses stay.
-	activeIdx := -1
+	// Decide which turns keep their structured tool data.
+	//   keptAssistant[i]  → assistant turn i keeps its toolUses
+	//   keptUser[i]       → user turn i keeps its structured toolResults (not narrated)
+	//
+	// The last assistant turn answered by the CURRENT outgoing message is always a
+	// candidate (its results live on the current message, not in history, so only
+	// the assistant side is kept here). When keepPaired is on, we additionally keep
+	// any assistant turn whose toolUses are fully answered by the very next user
+	// turn's toolResults — a self-contained, correctly-paired cycle the upstream
+	// accepts. Everything unpaired is still flattened to text below.
+	keptAssistant := make(map[int]bool)
+	keptUser := make(map[int]bool)
+
 	if len(currentToolResultIDs) > 0 {
-		last := history[len(history)-1]
+		lastIdx := len(history) - 1
+		last := history[lastIdx]
 		if last.AssistantResponseMessage != nil && len(last.AssistantResponseMessage.ToolUses) > 0 {
-			allCovered := true
-			for _, tu := range last.AssistantResponseMessage.ToolUses {
-				if !currentToolResultIDs[tu.ToolUseID] {
-					allCovered = false
-					break
-				}
+			if toolUsesCoveredBy(last.AssistantResponseMessage.ToolUses, currentToolResultIDs) {
+				keptAssistant[lastIdx] = true
 			}
-			if allCovered {
-				activeIdx = len(history) - 1
+		}
+	}
+
+	if keepPaired {
+		for i := 0; i+1 < len(history); i++ {
+			a := history[i].AssistantResponseMessage
+			if a == nil || len(a.ToolUses) == 0 {
+				continue
+			}
+			next := history[i+1].UserInputMessage
+			if next == nil || next.UserInputMessageContext == nil {
+				continue
+			}
+			resultIDs := collectToolResultIDs(next.UserInputMessageContext.ToolResults)
+			if len(resultIDs) == 0 {
+				continue
+			}
+			// Keep the cycle only if the next user turn answers EXACTLY this
+			// assistant's tool uses (all uses covered, no leftover results).
+			if toolUsesCoveredBy(a.ToolUses, resultIDs) && len(resultIDs) == len(a.ToolUses) {
+				keptAssistant[i] = true
+				keptUser[i+1] = true
 			}
 		}
 	}
@@ -1565,8 +1714,8 @@ func sanitizeKiroHistory(history []KiroHistoryMessage, currentToolResultIDs map[
 		}
 
 		if msg.AssistantResponseMessage != nil && len(msg.AssistantResponseMessage.ToolUses) > 0 {
-			if i == activeIdx {
-				continue // keep the active tool turn structured
+			if keptAssistant[i] {
+				continue // keep this tool turn structured
 			}
 			// Drop the structured tool calls WITHOUT writing any tool-invocation
 			// text into the assistant turn. Narrating the call here (e.g.
@@ -1579,8 +1728,8 @@ func sanitizeKiroHistory(history []KiroHistoryMessage, currentToolResultIDs map[
 
 		if msg.UserInputMessage != nil && msg.UserInputMessage.UserInputMessageContext != nil {
 			ctx := msg.UserInputMessage.UserInputMessageContext
-			if len(ctx.ToolResults) > 0 {
-				narrated := narrateToolResults(ctx.ToolResults, toolNames)
+			if len(ctx.ToolResults) > 0 && !keptUser[i] {
+				narrated := narrateToolResults(ctx.ToolResults, toolNames, toolInputs)
 				msg.UserInputMessage.Content = joinHistoryText(msg.UserInputMessage.Content, narrated)
 				ctx.ToolResults = nil
 			}

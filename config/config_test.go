@@ -71,6 +71,28 @@ func TestRequireProxyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestKeepToolHistoryRoundTrip(t *testing.T) {
+	if err := Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	// Defaults ON (nil pointer → true).
+	if !GetKeepToolHistory() {
+		t.Fatalf("expected keep-tool-history to default on")
+	}
+	if err := UpdateKeepToolHistory(false); err != nil {
+		t.Fatalf("update keep-tool-history: %v", err)
+	}
+	if GetKeepToolHistory() {
+		t.Fatalf("expected keep-tool-history to be disabled after update")
+	}
+	if err := UpdateKeepToolHistory(true); err != nil {
+		t.Fatalf("re-enable keep-tool-history: %v", err)
+	}
+	if !GetKeepToolHistory() {
+		t.Fatalf("expected keep-tool-history to be enabled again")
+	}
+}
+
 func TestProxyPoolAddDedupeAndRemove(t *testing.T) {
 	if err := Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
 		t.Fatalf("init config: %v", err)

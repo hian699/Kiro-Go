@@ -1558,6 +1558,7 @@
     const d = await res.json();
     $('requireApiKey').checked = d.requireApiKey;
     $('allowOverUsage').checked = d.allowOverUsage || false;
+    if ($('keepToolHistory')) $('keepToolHistory').checked = d.keepToolHistory !== false;
     $('maxPayloadBytes').value = String(d.maxPayloadBytes || 2000000);
     if ($('stickyPinTtl')) $('stickyPinTtl').value = String(d.stickyPinTtlSeconds || 300);
     if ($('publicBaseURL')) $('publicBaseURL').value = d.publicBaseURL || '';
@@ -1822,9 +1823,10 @@
   }
   async function saveOverUsageConfig() {
     const allowOverUsage = $('allowOverUsage').checked;
+    const keepToolHistory = $('keepToolHistory') ? $('keepToolHistory').checked : true;
     const maxPayloadBytes = parseInt($('maxPayloadBytes').value, 10);
     const stickyPinTtlSeconds = parseInt($('stickyPinTtl').value, 10);
-    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes, stickyPinTtlSeconds }) });
+    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, keepToolHistory, maxPayloadBytes, stickyPinTtlSeconds }) });
     toast(t('settings.overUsageSaved'), 'success');
   }
   async function changePassword() {
@@ -3853,10 +3855,12 @@
     const box = $('metricsSummary');
     if (!box) return;
     const total = entries.length;
-    let errorCount = 0, durSum = 0, durCount = 0;
+    let errorCount = 0, durSum = 0, durCount = 0, sumTokens = 0, sumCredits = 0;
     for (const e of entries) {
       if (e.status === 'error') errorCount++;
       if (e.durationMs) { durSum += e.durationMs; durCount++; }
+      sumTokens += (e.inputTokens || 0) + (e.outputTokens || 0);
+      sumCredits += e.credits || 0;
     }
     const avg = durCount ? Math.round(durSum / durCount) : 0;
     const chip = (label, value, danger) =>
@@ -3867,31 +3871,26 @@
     box.innerHTML =
       chip(t('metrics.logCount'), String(total), false) +
       chip(t('metrics.avgLatency'), String(avg) + 'ms', false) +
-      chip(t('metrics.quotaErrors'), String(errorCount), errorCount > 0);
+      chip(t('metrics.quotaErrors'), String(errorCount), errorCount > 0) +
+      chip(t('metrics.tokens'), formatNumber(sumTokens), false) +
+      chip(t('metrics.credits'), formatNumber(sumCredits), false);
   }
 
   function renderApiLog(allEntries) {
     const body = $('apiLogBody');
     const empty = $('apiLogEmpty');
-    const summary = $('apiLogSummary');
     if (!body) return;
     const entries = filterApiLog(allEntries);
     renderApiLogMetrics(entries);
     if (!entries.length) {
       body.innerHTML = '';
       if (empty) empty.classList.remove('hidden');
-      if (summary) summary.innerHTML = '';
       return;
     }
     if (empty) empty.classList.add('hidden');
 
-    let sumInput = 0, sumOutput = 0, sumCredits = 0, errorCount = 0;
     const rows = entries.map(e => {
-      sumInput += e.inputTokens || 0;
-      sumOutput += e.outputTokens || 0;
-      sumCredits += e.credits || 0;
       const isError = e.status === 'error';
-      if (isError) errorCount++;
       const keyLabel = e.apiKeyMasked
         ? (e.apiKeyName ? escapeHtml(e.apiKeyName) + ' ' : '') + '<span class="font-mono text-xs">' + escapeHtml(e.apiKeyMasked) + '</span>'
         : '<span class="muted-text">' + escapeHtml(t('apilog.noKey')) + '</span>';
@@ -3922,17 +3921,6 @@
         '</tr>';
     }).join('');
     body.innerHTML = rows;
-
-    if (summary) {
-      const errChip = errorCount
-        ? '<span class="apilog-chip" style="color:#ef4444;">' + escapeHtml(t('apilog.totalErrors', errorCount)) + '</span>'
-        : '';
-      summary.innerHTML =
-        '<span class="apilog-chip">' + escapeHtml(t('apilog.totalRequests', entries.length)) + '</span>' +
-        errChip +
-        '<span class="apilog-chip">' + escapeHtml(t('apilog.totalTokens', formatNumber(sumInput + sumOutput))) + '</span>' +
-        '<span class="apilog-chip">' + escapeHtml(t('apilog.totalCredits', formatNumber(sumCredits))) + '</span>';
-    }
   }
 
   async function clearApiLog() {

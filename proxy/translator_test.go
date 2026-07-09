@@ -663,3 +663,45 @@ func TestOpenAIToolResultImageCarriedWhenFollowedByUser(t *testing.T) {
 		t.Fatalf("tool image should not leak into a later user message, got %d on current", len(cur.Images))
 	}
 }
+
+// TestConvertClaudeToolsPreservesMcpNamesAndUniqueness verifies the MCP-aware
+// tool-name handling: long mcp__server__tool names collapse via the mcp__
+// namespace shortener (not a blind 64-byte cut), the sanitized form maps back to
+// the original for the client, and distinct client names never collide into the
+// same upstream name.
+func TestConvertClaudeToolsPreservesMcpNamesAndUniqueness(t *testing.T) {
+	longServer := strings.Repeat("averylongservername", 4) // > 64 chars alone
+	tools := []ClaudeTool{
+		{Name: "mcp__" + longServer + "__doSomething", InputSchema: map[string]interface{}{"type": "object"}},
+		{Name: "mcp__" + longServer + "__doSomething", InputSchema: map[string]interface{}{"type": "object"}},
+		{Name: "Read", InputSchema: map[string]interface{}{"type": "object"}},
+	}
+
+	kiroTools, nameMap := convertClaudeTools(tools)
+	if len(kiroTools) != 3 {
+		t.Fatalf("expected 3 converted tools, got %d", len(kiroTools))
+	}
+
+	seen := make(map[string]bool)
+	for _, kt := range kiroTools {
+		name := kt.ToolSpecification.Name
+		if len(name) > 64 {
+			t.Fatalf("tool name exceeds 64-char ceiling: %q (%d)", name, len(name))
+		}
+		if seen[name] {
+			t.Fatalf("duplicate upstream tool name after conversion: %q", name)
+		}
+		seen[name] = true
+	}
+
+	// Every sanitized name that differs from its original must map back so the
+	// client can match the returned tool_use to its registry.
+	for sanitized, original := range nameMap {
+		if sanitized == original {
+			t.Fatalf("nameMap should only hold renamed tools, got identity %q", sanitized)
+		}
+	}
+	if len(nameMap) == 0 {
+		t.Fatalf("expected renamed MCP tools to be recorded in nameMap")
+	}
+}
